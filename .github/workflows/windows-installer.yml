@@ -93,7 +93,8 @@ jobs:
           if ((Get-Content "$dir\config.yaml" -Raw) -notmatch "(?m)^cameras: \[\]") { Write-Error "fresh config should have no cameras"; exit 1 }
           Copy-Item tests\demo-config.yaml "$dir\config.yaml" -Force
           # started exactly the way the desktop shortcut starts it: launch.bat opens the app window
-          Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir -Wait
+          # no -Wait: it would also wait for the app that launch.bat leaves running
+          Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir
           $ok = $false
           for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep 5
