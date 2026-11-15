@@ -1,0 +1,67 @@
+# ===== CCTV Analytics configuration =====
+# Copy to config.yaml (run.py does this automatically on first start) and edit.
+
+site_name: "مكان العمل"
+timezone: "Asia/Baghdad"
+database: "data/cctv.db"
+
+detector:
+  model: "yolo11n.pt"     # n = fastest. Use yolo11s.pt for better accuracy on a stronger PC/GPU
+  confidence: 0.35
+  process_fps: 8          # analysed frames per second per camera (lower = less CPU)
+  imgsz: 640
+  device: null            # null = auto, "cpu", or "0" for the first NVIDIA GPU
+
+privacy:
+  show_notice: true       # shows the privacy notice on the dashboard
+  blur_people: true       # blurs heads in the live view
+  retention_days: 30      # aggregate data older than this is deleted automatically
+  store_snapshots: false  # the app never saves video/images to disk
+
+working_hours:            # used for "after hours" alerts and in reports
+  start: "08:00"
+  end: "17:00"
+  days: [6, 0, 1, 2, 3]   # Mon=0 ... Sun=6  ->  Sunday to Thursday
+
+alerts:
+  after_hours_presence: true
+  max_occupancy: 0        # e.g. 15 = alert when more than 15 people are in view. 0 = off
+  cooldown_minutes: 15
+
+agent:
+  model: "claude-opus-5-5"
+  language: "ar"
+  daily_report_time: "17:30"   # automatic daily report ("" to disable)
+
+server:
+  host: "0.0.0.0"         # use "127.0.0.1" to allow access only from this PC
+  port: 8000
+  password: ""            # set a password to protect the dashboard (username can be anything)
+
+# Coordinates are fractions of the image: [x, y] where [0,0] = top-left, [1,1] = bottom-right.
+# Line: people crossing it are counted. The arrow drawn on the video shows the "IN" direction;
+# set invert: true if it points the wrong way.
+# Zone: a polygon; the app measures how many people are inside and how long they stay.
+cameras:
+  - id: demo
+    name: "فيديو تجريبي"
+    source: "samples/people.mp4"     # a video file, a webcam number (0), or an RTSP URL
+    loop: true
+    lines:
+      - id: door1
+        name: "الباب الرئيسي"
+        points: [[0.05, 0.55], [0.95, 0.55]]
+    zones:
+      - id: reception
+        name: "الاستقبال"
+        points: [[0.0, 0.6], [0.5, 0.6], [0.5, 1.0], [0.0, 1.0]]
+
+  # Example real camera (remove the # to enable):
+  # - id: entrance
+  #   name: "المدخل"
+  #   source: "rtsp://admin:PASSWORD@192.168.1.64:554/Streaming/Channels/101"
+  #   lines:
+  #     - id: main_door
+  #       name: "الباب الرئيسي"
+  #       points: [[0.2, 0.7], [0.8, 0.7]]
+  #   zones: []

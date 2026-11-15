@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تحليلات الكاميرات</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0f1419; --card:#182029; --line:#26313d; --text:#e6edf3; --muted:#8b98a5; --accent:#3fb6a8; --in:#3fb6a8; --out:#e8a33d; --warn:#e5534b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:20px; margin:0; }
+  header .meta { color:var(--muted); font-size:14px; }
+  input[type=date], input[type=text], textarea { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
+  button { background:var(--accent); color:#06201d; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-weight:600; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:wait; }
+  main { padding:16px 20px; display:grid; gap:16px; max-width:1500px; margin:auto; }
+  .notice { background:#1d2a1f; border:1px solid #2f4a33; color:#cfe8d2; padding:10px 14px; border-radius:10px; font-size:14px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .kpi .v { font-size:30px; font-weight:700; margin-top:4px; font-variant-numeric: tabular-nums; }
+  .kpi .l { color:var(--muted); font-size:13px; }
+  .grid2 { display:grid; grid-template-columns: 1.3fr 1fr; gap:16px; }
+  @media (max-width: 1000px) { .grid2 { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
+  .card h2 { font-size:16px; margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .cams { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
+  .cam img { width:100%; border-radius:8px; background:#000; aspect-ratio:16/9; object-fit:contain; }
+  .cam .row { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin-top:6px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-inline-end:6px; background:var(--muted); }
+  .dot.online { background:var(--in); } .dot.offline { background:var(--warn); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:right; padding:7px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  td code { direction:ltr; display:inline-block; font-size:12px; color:#9fd3cc; word-break:break-all; }
+  .answer { white-space:pre-wrap; line-height:1.7; background:#11181f; border-radius:8px; padding:12px; margin-top:10px; max-height:520px; overflow:auto; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
+  .chips button { font-size:13px; padding:5px 10px; }
+  .muted { color:var(--muted); font-size:13px; }
+  .alert { color:#f2b8b5; }
+  canvas { max-height:280px; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1 id="site">تحليلات الكاميرات</h1><div class="meta" id="meta"></div></div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <label class="muted" for="day">اليوم</label><input type="date" id="day">
+    <a id="csv" href="#"><button class="secondary">تصدير CSV</button></a>
+  </div>
+</header>
+<main>
+  <div class="notice" id="notice" hidden></div>
+
+  <section class="kpis">
+    <div class="kpi"><div class="l">دخلوا</div><div class="v" id="k-in">-</div></div>
+    <div class="kpi"><div class="l">طلعوا</div><div class="v" id="k-out">-</div></div>
+    <div class="kpi"><div class="l">موجودين تقديرياً</div><div class="v" id="k-net">-</div></div>
+    <div class="kpi"><div class="l">ظاهرين بالكاميرات الآن</div><div class="v" id="k-now">-</div></div>
+    <div class="kpi"><div class="l">ساعة الذروة</div><div class="v" id="k-peak">-</div></div>
+    <div class="kpi"><div class="l">أول / آخر دخول</div><div class="v" id="k-first" style="font-size:22px">-</div></div>
+  </section>
+
+  <section class="card">
+    <h2>البث المباشر <span class="muted" id="blurinfo"></span></h2>
+    <div class="cams" id="cams"></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>الدخول والخروج حسب الساعة</h2><canvas id="hourly"></canvas></div>
+    <div class="card"><h2>آخر 7 أيام</h2><canvas id="trend"></canvas></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>المساعد الذكي <span class="muted" id="ai-state"></span></h2>
+      <div class="chips">
+        <button class="secondary" data-q="شنو أكثر ساعات الزحمة اليوم؟ وشنو تنصحني؟">ساعات الزحمة</button>
+        <button class="secondary" data-q="قارن اليوم بالأسبوع الماضي">مقارنة بالأسبوع</button>
+        <button class="secondary" data-q="شكد يبقون الناس بمنطقة الاستقبال بالمعدل؟ وهل اكو انتظار طويل؟">مدة الانتظار</button>
+        <button class="secondary" data-q="اكو تنبيهات خارج الدوام هذا الأسبوع؟">تنبيهات خارج الدوام</button>
+      </div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="q" placeholder="اسأل عن الحركة، الزحمة، المناطق..." style="flex:1">
+        <button id="ask">اسأل</button>
+        <button id="report" class="secondary">تقرير اليوم</button>
+      </div>
+      <div class="answer" id="answer" hidden></div>
+    </div>
+    <div class="card">
+      <h2>المناطق ومدة البقاء</h2>
+      <table><thead><tr><th>المنطقة</th><th>زيارات</th><th>متوسط البقاء</th><th>أطول بقاء</th></tr></thead><tbody id="zones"></tbody></table>
+      <h2 style="margin-top:16px">التنبيهات</h2>
+      <table><tbody id="alerts"></tbody></table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>اكتشاف الكاميرات على الشبكة
+      <span style="display:flex;gap:8px"><input type="text" id="subnet" placeholder="تلقائي، مثل 192.168.1.0/24" dir="ltr"><button id="discover">ابحث</button></span>
+    </h2>
+    <div class="muted" id="disc-state">يبحث عن كاميرات ONVIF ويفحص منافذ RTSP (554 و 8554) على الشبكة المحلية.</div>
+    <table><thead><tr><th>IP</th><th>الطريقة</th><th>الاسم / الموديل</th><th>روابط RTSP مقترحة (ضيف اسم المستخدم والرمز)</th></tr></thead><tbody id="disc"></tbody></table>
+  </section>
+
+  <section class="card">
+    <h2>التقارير السابقة</h2>
+    <div id="reports" class="muted">لا توجد تقارير بعد.</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const j = async (url, opts) => { const r = await fetch(url, opts); if (!r.ok) throw new Error(await r.text()); return r.json(); };
+const post = (url, body) => j(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{})});
+let charts = {}, today = null;
+
+function chart(id, cfg) {
+  if (typeof Chart === "undefined") { $(id).replaceWith(Object.assign(document.createElement("div"), {id, className:"muted", textContent:"الرسوم البيانية تحتاج اتصال إنترنت لتحميل مكتبة Chart.js."})); return; }
+  if (!($(id) instanceof HTMLCanvasElement)) return;
+  if (charts[id]) { charts[id].data = cfg.data; charts[id].update(); return; }
+  Chart.defaults.color = "#8b98a5"; Chart.defaults.borderColor = "#26313d";
+  charts[id] = new Chart($(id), cfg);
+}
+
+async function loadInfo() {
+  const i = await j("/api/info");
+  today = i.today; if (!$("day").value) $("day").value = today;
+  $("site").textContent = i.site_name;
+  $("meta").textContent = `مدة حفظ البيانات: ${i.privacy.retention_days} يوم`;
+  if (i.privacy.show_notice) { $("notice").hidden = false; $("notice").textContent = i.privacy.notice_text; }
+  $("blurinfo").textContent = i.privacy.blur_people ? "الوجوه مموّهة" : "";
+  $("ai-state").textContent = i.ai_enabled ? "Claude مفعّل" : "بدون مفتاح API (تقرير أساسي فقط)";
+}
+
+async function loadCams() {
+  const cams = await j("/api/cameras");
+  const box = $("cams");
+  if (!box.dataset.init) {
+    box.innerHTML = cams.length ? cams.map(c => `
+      <div class="cam"><img src="/stream/${encodeURIComponent(c.id)}" alt="${esc(c.name)}">
+      <div class="row"><span><span class="dot" id="dot-${esc(c.id)}"></span>${esc(c.name)}</span><span id="st-${esc(c.id)}"></span></div></div>`).join("")
+      : `<div class="muted">لا توجد كاميرات. أضفها في config.yaml أو استخدم البحث بالأسفل.</div>`;
+    box.dataset.init = 1;
+  }
+  let now = 0;
+  for (const c of cams) {
+    now += c.people_now || 0;
+    const dot = $("dot-" + c.id); if (dot) dot.className = "dot " + (c.status === "online" ? "online" : "offline");
+    const st = $("st-" + c.id);
+    if (st) st.textContent = `${c.status} · ${c.fps ?? 0} fps · ${c.people_now ?? 0} أشخاص`;
+  }
+  $("k-now").textContent = now;
+}
+
+async function loadStats() {
+  const day = $("day").value || today;
+  $("csv").href = `/api/export.csv?day=${day}`;
+  const [s, h, t, z, a, reps] = await Promise.all([
+    j(`/api/stats/summary?day=${day}`), j(`/api/stats/hourly?day=${day}`), j(`/api/stats/trend?days=7`),
+    j(`/api/stats/zones?day=${day}`), j(`/api/alerts?day=${day}`), j(`/api/reports`)]);
+  $("k-in").textContent = s.total_in; $("k-out").textContent = s.total_out; $("k-net").textContent = s.net_inside_estimate;
+  $("k-peak").textContent = s.busiest_hour == null ? "-" : `${String(s.busiest_hour).padStart(2,"0")}:00`;
+  $("k-first").textContent = `${s.first_entry || "-"} / ${s.last_entry || "-"}`;
+  const hrs = h.filter(x => x.hour >= 6 && x.hour <= 23);
+  chart("hourly", { type:"bar", data:{ labels: hrs.map(x => `${x.hour}:00`), datasets:[
+      {label:"دخول", data: hrs.map(x => x.in), backgroundColor:"#3fb6a8"},
+      {label:"خروج", data: hrs.map(x => x.out), backgroundColor:"#e8a33d"}]},
+    options:{ responsive:true, plugins:{legend:{position:"bottom"}}, scales:{y:{beginAtZero:true, ticks:{precision:0}}} } });
+  chart("trend", { type:"line", data:{ labels: t.map(x => x.day.slice(5)), datasets:[
+      {label:"دخول", data: t.map(x => x.in), borderColor:"#3fb6a8", backgroundColor:"#3fb6a8", tension:.3},
+      {label:"خروج", data: t.map(x => x.out), borderColor:"#e8a33d", backgroundColor:"#e8a33d", tension:.3}]},
+    options:{ responsive:true, plugins:{legend:{position:"bottom"}}, scales:{y:{beginAtZero:true, ticks:{precision:0}}} } });
+  const fmt = (s) => s >= 60 ? `${(s/60).toFixed(1)} د` : `${Math.round(s)} ث`;
+  $("zones").innerHTML = z.length ? z.map(r => `<tr><td>${esc(r.zone_id)}</td><td>${r.visits}</td><td>${fmt(r.avg_dwell_s)}</td><td>${fmt(r.max_dwell_s)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">لا توجد بيانات مناطق لهذا اليوم.</td></tr>`;
+  $("alerts").innerHTML = a.length ? a.slice(0, 10).map(r => `<tr><td class="muted">${esc(r.time.slice(11))}</td><td class="alert">${esc(r.message)}</td></tr>`).join("")
+    : `<tr><td class="muted">لا توجد تنبيهات.</td></tr>`;
+  if (reps.length) $("reports").innerHTML = reps.slice(0, 5).map(r =>
+    `<details><summary>${esc(r.day)} · ${esc(r.time)}</summary><div class="answer">${esc(r.content)}</div></details>`).join("");
+}
+
+async function ask(q) {
+  if (!q) return;
+  const btns = [$("ask"), $("report")]; btns.forEach(b => b.disabled = true);
+  $("answer").hidden = false; $("answer").textContent = "جاري التحليل...";
+  try { $("answer").textContent = (await post("/api/agent/ask", {question:q})).answer; }
+  catch (e) { $("answer").textContent = "خطأ: " + e.message; }
+  btns.forEach(b => b.disabled = false);
+}
+
+$("ask").onclick = () => ask($("q").value.trim());
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") ask($("q").value.trim()); });
+document.querySelectorAll("[data-q]").forEach(b => b.onclick = () => { $("q").value = b.dataset.q; ask(b.dataset.q); });
+$("report").onclick = async () => {
+  $("answer").hidden = false; $("answer").textContent = "جاري كتابة التقرير...";
+  $("report").disabled = true;
+  try { $("answer").textContent = (await post("/api/reports/daily", {day: $("day").value})).report; loadStats(); }
+  catch (e) { $("answer").textContent = "خطأ: " + e.message; }
+  $("report").disabled = false;
+};
+$("discover").onclick = async () => {
+  $("discover").disabled = true; $("disc-state").textContent = "جاري البحث... (قد يستغرق 10-30 ثانية)"; $("disc").innerHTML = "";
+  try {
+    const r = await post("/api/discover", {subnet: $("subnet").value.trim()});
+    $("disc-state").textContent = `جهازك: ${r.local_ip} · الشبكة: ${r.subnet} · وُجدت ${r.cameras.length} كاميرا` + (r.errors.length ? ` · ${r.errors.join("، ")}` : "");
+    $("disc").innerHTML = r.cameras.map(c => `<tr><td dir="ltr">${esc(c.ip)}</td><td>${esc(c.method)}${c.rtsp_ports.length ? " ("+c.rtsp_ports.join(",")+")" : ""}</td>
+      <td>${esc(c.name || c.server || "-")}<div class="muted">${esc(c.model || "")}</div></td>
+      <td>${Object.entries(c.rtsp_url_examples).map(([k,v]) => `<div><span class="muted">${esc(k)}:</span> <code>${esc(v)}</code></div>`).join("")}</td></tr>`).join("");
+  } catch (e) { $("disc-state").textContent = "خطأ: " + e.message; }
+  $("discover").disabled = false;
+};
+$("day").onchange = loadStats;
+
+(async () => {
+  await loadInfo(); await Promise.all([loadCams(), loadStats()]);
+  setInterval(loadCams, 2000);
+  setInterval(() => { if (($("day").value || today) === today) loadStats(); }, 15000);
+})();
+</script>
+</body>
+</html>

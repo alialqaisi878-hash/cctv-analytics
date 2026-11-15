@@ -1,0 +1,7 @@
+config.yaml
+data/
+models/*.pt
+samples/*.mp4
+__pycache__/
+.venv/
+*.db

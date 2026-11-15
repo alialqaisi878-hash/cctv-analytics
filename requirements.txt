@@ -1,0 +1,9 @@
+ultralytics>=8.3        # YOLO detection + ByteTrack tracking (installs PyTorch and OpenCV)
+lap>=0.5                # required by the ByteTrack tracker
+opencv-python>=4.9
+fastapi>=0.110
+uvicorn[standard]>=0.29
+anthropic>=2.0          # Claude API for the AI analyst (optional at runtime)
+pyyaml>=6.0
+numpy
+pytest                  # for running the tests
