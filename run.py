@@ -126,17 +126,18 @@ def run_windowed(config: str, port: int, url: str) -> int:
             last_tick = now
             rc = server.poll()
             if rc == RESTART_EXIT_CODE:
-                server = start_server()
-                grace_until = now + 90
+                server = start_server()       # the new server starts with a fresh idle clock
                 continue
             if rc is not None:
                 _message_box(f"CCTV Analytics stopped unexpectedly.\nDetails: {log_path}")
                 return 1
             st = _window_state(url_local)
-            if st is None or now < grace_until:
+            if st is None:
                 continue
-            if (st["closed"] is not None and st["closed"] > 4) or st["idle"] > idle_limit:
+            if st["closed"] is not None and st["closed"] > 4:
                 return 0                      # window closed by the user
+            if st["idle"] > idle_limit and now >= grace_until:
+                return 0                      # window gone without a goodbye
     finally:
         if server.poll() is None:
             server.kill()
