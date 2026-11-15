@@ -2,7 +2,7 @@ name: Windows installer
 
 # Builds CCTV-Analytics-Setup.exe and the online-update package, installs it on a clean
 # Windows machine, and checks that the app starts and analyses the sample video.
-# Push a tag like v1.1.0 to publish a release: installed copies then update themselves.
+# Bump app/version.py and merge to main to publish a release: installed copies then update themselves.
 on:
   push:
     branches: [main]
@@ -111,10 +111,26 @@ jobs:
             dist/CCTV-Analytics-Setup.exe
             dist/cctv-analytics-update.zip
 
+      # A release is published whenever main carries a version (app/version.py) that has no
+      # release yet. To ship an update: bump app/version.py and merge to main.
+      - name: Check whether this version is already released
+        id: rel
+        if: github.event_name == 'push'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v$env:APP_VERSION" --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { "exists=true" >> $env:GITHUB_OUTPUT } else { "exists=false" >> $env:GITHUB_OUTPUT }
+          exit 0
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && steps.rel.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.APP_VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: CCTV Analytics v${{ env.APP_VERSION }}
           files: |
             dist/CCTV-Analytics-Setup.exe
             dist/cctv-analytics-update.zip
