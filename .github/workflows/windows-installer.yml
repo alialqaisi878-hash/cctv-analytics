@@ -37,6 +37,9 @@ jobs:
           New-Item -ItemType Directory -Force samples, models, dist | Out-Null
           Invoke-WebRequest https://github.com/intel-iot-devkit/sample-videos/raw/master/people-detection.mp4 -OutFile samples/people.mp4
           Invoke-WebRequest https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt -OutFile models/yolo11n.pt
+          Invoke-WebRequest https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath tools -Force
+          Get-Item tools/uv.exe
 
       - name: Build update package
         shell: pwsh
@@ -69,6 +72,7 @@ jobs:
           Write-Host "Setup exit code: $($p.ExitCode)"
           if (Test-Path "$dir\install.log") { Get-Content "$dir\install.log" -Tail 40 }
           if (-not (Test-Path "$dir\.venv\Scripts\python.exe")) { Write-Error "venv missing"; exit 1 }
+          Get-Content "$dir\.venv\pyvenv.cfg"
           if (-not (Test-Path "$dir\config.yaml")) { Write-Error "config.yaml missing"; exit 1 }
           Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\CCTV Analytics\CCTV Analytics.lnk"
 

@@ -35,7 +35,7 @@ RESTART_EXIT_CODE = 3  # launch.bat / start.sh restart the app when they see thi
 # never touched by an update
 # (launchers are protected because Windows reads a running .bat file while it executes)
 PROTECTED = {"config.yaml", "data", ".venv", ".git", "install.log", "models", "samples",
-             "launch.bat", "start.bat", "start.sh"}
+             "launch.bat", "start.bat", "start.sh", "python", "tools"}
 
 
 def parse_version(v: str) -> tuple[int, ...]:
