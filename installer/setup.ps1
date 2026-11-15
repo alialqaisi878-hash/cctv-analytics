@@ -1,6 +1,6 @@
 # Prepares the Python environment for CCTV Analytics on Windows.
 # Run by the installer after copying files; also available as "Repair" in the Start menu.
-#  - gets a private Python 3.12 via uv (in <AppDir>\python) and a virtual environment in <AppDir>\.venv
+#  - downloads a private standalone Python 3.12 (in <AppDir>\python) and a virtual environment in <AppDir>\.venv
 #  - installs PyTorch (GPU build if an NVIDIA card is found, otherwise CPU) and the app requirements
 #  - creates config.yaml from the example (never overwrites an existing one)
 param(
@@ -42,12 +42,11 @@ try {
     Write-Host "CCTV Analytics setup. This downloads about 300-600 MB and can take 5-15 minutes." -ForegroundColor Green
     Write-Host "Install folder: $AppDir"
 
-    # Python is provided by uv (https://github.com/astral-sh/uv) as a private copy inside the app
-    # folder, so nothing depends on (or interferes with) other Pythons installed on this PC.
+    # uv (https://github.com/astral-sh/uv) is used as a fast, reliable package installer.
     $tools = Join-Path $AppDir "tools"
     $uv = Join-Path $tools "uv.exe"
     if (-not (Test-Path $uv)) {
-        Step "Downloading uv (Python manager)"
+        Step "Downloading uv (package installer)"
         New-Item -ItemType Directory -Force $tools | Out-Null
         $uvZip = Join-Path $env:TEMP "uv-windows.zip"
         Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip" `
@@ -56,28 +55,47 @@ try {
         Remove-Item $uvZip -ErrorAction SilentlyContinue
         if (-not (Test-Path $uv)) { Fail "uv.exe missing after download" }
     }
-    $env:UV_PYTHON_INSTALL_DIR = Join-Path $AppDir "python"
     $env:UV_LINK_MODE = "copy"          # the uv cache and the app may be on different drives
     $env:UV_HTTP_TIMEOUT = "180"
 
+    # Private Python: a standalone build unpacked into <AppDir>\python. Downloaded directly (not with
+    # "uv python install", which creates a directory junction that some Windows PCs refuse: os error 448).
+    $pyDir = Join-Path $AppDir "python"
+    $py = Join-Path $pyDir "python.exe"
+    if (-not (Test-Path $py)) {
+        Step "Downloading private Python 3.12"
+        if (Test-Path $pyDir) { Remove-Item -Recurse -Force $pyDir -ErrorAction SilentlyContinue }
+        $pyUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20250317/cpython-3.12.9+20250317-x86_64-pc-windows-msvc-install_only.tar.gz"
+        $pyTar = Join-Path $AppDir "python-download.tar.gz"
+        Invoke-WebRequest -Uri $pyUrl -OutFile $pyTar -UseBasicParsing -ErrorAction Stop
+        # relative paths: tar.exe then never sees the (possibly non-English) folder name
+        Push-Location $AppDir
+        & "$env:SystemRoot\System32\tar.exe" -xzf "python-download.tar.gz"
+        $tarExit = $LASTEXITCODE
+        Pop-Location
+        Remove-Item $pyTar -ErrorAction SilentlyContinue
+        if ($tarExit -ne 0 -or -not (Test-Path $py)) { Fail "could not unpack Python 3.12" }
+    }
+
     $venv = Join-Path $AppDir ".venv"
     $vpy = Join-Path $venv "Scripts\python.exe"
-    # environments made by older versions of this setup (with whatever Python was on the PC) are rebuilt
+    # environments made by older versions of this setup (other Pythons) are rebuilt
     $cfgFile = Join-Path $venv "pyvenv.cfg"
-    if ((Test-Path $venv) -and -not ((Test-Path $cfgFile) -and (Select-String -Path $cfgFile -Pattern "^uv\s*=" -Quiet))) {
+    $homeOk = $false
+    if (Test-Path $cfgFile) {
+        $homeLine = (Select-String -Path $cfgFile -Pattern "^home\s*=\s*(.+)$" | Select-Object -First 1)
+        if ($homeLine) { $homeOk = ($homeLine.Matches[0].Groups[1].Value.Trim().TrimEnd('\') -ieq $pyDir.TrimEnd('\')) }
+    }
+    if ((Test-Path $venv) -and -not ($homeOk -and (Test-Path $vpy))) {
         Step "Removing the old Python environment"
         Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue
         if (Test-Path $venv) { Fail "could not delete $venv - close all CCTV Analytics windows and try again" }
     }
 
-    Step "Preparing private Python 3.12"
-    & $uv python install 3.12
-    if ($LASTEXITCODE -ne 0) { Fail "could not download Python 3.12" }
-
     if (-not (Test-Path $vpy)) {
         Step "Creating private Python environment"
-        & $uv venv $venv --python 3.12 --python-preference only-managed --seed
-        if ($LASTEXITCODE -ne 0) { Fail "could not create the Python environment" }
+        & $py -m venv $venv
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $vpy)) { Fail "could not create the Python environment" }
     }
 
     $hasNvidia = $false
