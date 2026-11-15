@@ -4,15 +4,19 @@
     python run.py --discover             # list cameras found on the network and exit
     python run.py --demo-data            # fill the database with a sample week, to try the dashboard/agent
     python run.py --report               # print today's report and exit
+    python run.py --app-window           # desktop mode: own window, no console (used by the Windows shortcut)
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import random
 import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import webbrowser
@@ -27,6 +31,90 @@ def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _find_app_browser() -> str | None:
+    """Edge or Chrome: both can show a web page as a plain application window (--app=)."""
+    candidates = []
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+        if base:
+            candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
+            candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    return shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
+
+
+def _open_app_window(url: str) -> subprocess.Popen | None:
+    """Open the dashboard in its own window. Returns the window process (ends when the window is closed)."""
+    exe = _find_app_browser()
+    if not exe:
+        webbrowser.open(url)
+        return None
+    profile = ROOT / "data" / "window"   # own profile: the process then lives exactly as long as the window
+    profile.mkdir(parents=True, exist_ok=True)
+    return subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run",
+                             "--no-default-browser-check", "--window-size=1400,900"])
+
+
+def _message_box(text: str) -> None:
+    if os.name == "nt":
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, text, "CCTV Analytics", 0x10)
+    else:
+        print(text)
+
+
+def run_windowed(config: str, port: int, url: str) -> int:
+    """Desktop mode: the server runs hidden in a child process, the dashboard shows in its own window.
+
+    Closing the window stops the program. When the server exits with RESTART_EXIT_CODE (an online
+    update was installed) it is started again and the window stays open.
+    """
+    from app.updater import RESTART_EXIT_CODE
+    if _port_in_use(port):          # already running (auto-start, or opened twice): just show it
+        _open_app_window(url)
+        return 0
+    (ROOT / "data").mkdir(exist_ok=True)
+    log_path = ROOT / "data" / "app.log"
+    if log_path.exists() and log_path.stat().st_size > 5_000_000:
+        log_path.unlink()
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe":   # the child needs real output streams (they go to the log file)
+        exe = exe.with_name("python.exe")
+    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+    flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+
+    def start_server() -> subprocess.Popen:
+        log = open(log_path, "ab")
+        return subprocess.Popen([str(exe), str(ROOT / "run.py"), "--config", config], cwd=str(ROOT), env=env,
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, creationflags=flags)
+
+    server = start_server()
+    deadline = time.time() + 180
+    while not _port_in_use(port):
+        if server.poll() is not None or time.time() > deadline:
+            if server.poll() is None:
+                server.kill()
+            _message_box(f"CCTV Analytics could not start.\nDetails: {log_path}")
+            return 1
+        time.sleep(0.3)
+    window = _open_app_window(url)
+    try:
+        while True:
+            if window is not None and window.poll() is not None:
+                return 0                      # window closed by the user
+            rc = server.poll()
+            if rc == RESTART_EXIT_CODE:
+                server = start_server()
+            elif rc is not None:
+                _message_box(f"CCTV Analytics stopped unexpectedly.\nDetails: {log_path}")
+                return 1
+            time.sleep(0.5)
+    finally:
+        if server.poll() is None:
+            server.kill()
 
 
 def seed_demo(cfg: dict, days: int = 7) -> None:
@@ -81,7 +169,11 @@ def main():
     ap.add_argument("--report", action="store_true", help="print today's report and exit")
     ap.add_argument("--no-cameras", action="store_true", help="start dashboard without camera workers")
     ap.add_argument("--open-browser", action="store_true", help="open the dashboard in the web browser")
+    ap.add_argument("--app-window", action="store_true", help="desktop mode: show the dashboard in its own window")
     args = ap.parse_args()
+
+    if sys.stdout is None or sys.stderr is None:   # started with pythonw.exe: no console
+        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     cfg_path = ROOT / args.config
@@ -112,6 +204,8 @@ def main():
 
     host, port = cfg["server"]["host"], cfg["server"]["port"]
     url = f"http://localhost:{port}"
+    if args.app_window:
+        sys.exit(run_windowed(args.config, port, url))
     if _port_in_use(port):
         # already running (e.g. started from the desktop shortcut twice): just show it
         print(f"CCTV Analytics is already running: {url}")

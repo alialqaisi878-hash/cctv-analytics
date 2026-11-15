@@ -46,7 +46,8 @@ class Analyst:
 
     @property
     def ai_enabled(self) -> bool:
-        return self._client is not None or bool(os.environ.get("ANTHROPIC_API_KEY")
+        return self._client is not None or bool(self.cfg["agent"].get("api_key")
+                                                 or os.environ.get("ANTHROPIC_API_KEY")
                                                  or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
 
     # ---------- tools ----------
@@ -117,7 +118,7 @@ class Analyst:
     # ---------- public ----------
     def ask(self, question: str) -> str:
         if not self.ai_enabled:
-            return ("الوكيل الذكي غير مفعّل: ضع مفتاح ANTHROPIC_API_KEY ثم أعد تشغيل البرنامج.\n\n"
+            return ("المساعد الذكي غير مفعّل: ضع مفتاح Claude API في صفحة الإعدادات.\n\n"
                     + self.fallback_report(self.db.today()))
         import anthropic
 
@@ -125,7 +126,8 @@ class Analyst:
         system = SYSTEM_PROMPT.format(site=self.cfg["site_name"], lang_name=_lang_name(self.cfg["agent"]["language"]),
                                       today=self.db.today(), tz=self.cfg["timezone"],
                                       wh=f"{wh['start']}-{wh['end']}, weekdays {wh['days']} (Mon=0)")
-        client = self._client or anthropic.Anthropic()
+        key = self.cfg["agent"].get("api_key")
+        client = self._client or (anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic())
         try:
             runner = client.beta.messages.tool_runner(
                 model=self.cfg["agent"]["model"],
@@ -141,7 +143,7 @@ class Analyst:
             )
             final = runner.until_done()
         except anthropic.AuthenticationError:
-            return "مفتاح Claude API غير صحيح. تأكد من ANTHROPIC_API_KEY."
+            return "مفتاح Claude API غير صحيح. صحّحه في صفحة الإعدادات."
         except anthropic.RateLimitError:
             return "تم تجاوز حد الطلبات على Claude API، حاول بعد دقيقة."
         except anthropic.APIConnectionError:

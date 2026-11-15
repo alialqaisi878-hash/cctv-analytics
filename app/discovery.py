@@ -8,6 +8,7 @@ Run standalone:  python -m app.discovery
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 import socket
@@ -107,6 +108,102 @@ def rtsp_scan(subnet: str | None = None, ports=(554, 8554), timeout: float = 0.6
     with ThreadPoolExecutor(workers) as ex:
         results = ex.map(lambda t: _rtsp_check(t[0], t[1], timeout), targets)
     return [r for r in results if r]
+
+
+# Stream paths tried when a camera is added from the dashboard ({ch} = channel number, for recorders).
+STREAM_PATHS = [
+    ("Hikvision", "/Streaming/Channels/{ch}01"),
+    ("Dahua / Imou", "/cam/realmonitor?channel={ch}&subtype=0"),
+    ("Uniview", "/unicast/c{ch}/s0/live"),
+    ("TP-Link Tapo/VIGI", "/stream1"),
+    ("Reolink", "/h264Preview_{ch:02d}_main"),
+    ("Generic", "/live"),
+    ("Generic", "/h264"),
+    ("Generic", "/11"),
+    ("Generic", "/"),
+]
+
+
+def _rtsp_request(sock: socket.socket, uri: str, cseq: int, auth: str | None) -> tuple[int, str]:
+    req = f"DESCRIBE {uri} RTSP/1.0\r\nCSeq: {cseq}\r\nUser-Agent: cctv-analytics\r\nAccept: application/sdp\r\n"
+    if auth:
+        req += f"Authorization: {auth}\r\n"
+    sock.sendall((req + "\r\n").encode())
+    data = b""
+    while b"\r\n\r\n" not in data and len(data) < 16384:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    head = data.decode(errors="ignore")
+    m = re.match(r"RTSP/1\.\d\s+(\d{3})", head)
+    return (int(m.group(1)) if m else 0), head
+
+
+def _auth_header(head: str, uri: str, user: str, password: str) -> str | None:
+    challenges = re.findall(r"WWW-Authenticate:\s*(.+)", head, re.I)
+    digest = next((c for c in challenges if c.strip().lower().startswith("digest")), None)
+    if digest:
+        realm = re.search(r'realm="([^"]*)"', digest)
+        nonce = re.search(r'nonce="([^"]*)"', digest)
+        if not (realm and nonce):
+            return None
+        md5 = lambda x: hashlib.md5(x.encode()).hexdigest()  # noqa: E731  (RTSP digest auth is MD5 by spec)
+        ha1 = md5(f"{user}:{realm.group(1)}:{password}")
+        ha2 = md5(f"DESCRIBE:{uri}")
+        resp = md5(f"{ha1}:{nonce.group(1)}:{ha2}")
+        return (f'Digest username="{user}", realm="{realm.group(1)}", nonce="{nonce.group(1)}", '
+                f'uri="{uri}", response="{resp}"')
+    if any(c.strip().lower().startswith("basic") for c in challenges):
+        import base64
+        return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+    return None
+
+
+def rtsp_describe(ip: str, port: int, path: str, user: str, password: str, timeout: float = 4.0) -> int:
+    """Ask the camera for a stream description. Returns the RTSP status (200 = stream exists and the
+    login is right, 401/403 = wrong login, 404 = no such stream) or 0 when the camera did not answer."""
+    uri = f"rtsp://{ip}:{port}{path}"
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            code, head = _rtsp_request(s, uri, 1, None)
+            if code != 401:
+                return code
+            auth = _auth_header(head, uri, user, password)
+            if not auth:
+                return 401
+            try:
+                code, _ = _rtsp_request(s, uri, 2, auth)
+                if code:
+                    return code
+            except OSError:
+                pass
+        with socket.create_connection((ip, port), timeout=timeout) as s:   # camera closed the connection
+            s.settimeout(timeout)
+            return _rtsp_request(s, uri, 2, auth)[0]
+    except OSError:
+        return 0
+
+
+def find_stream(ip: str, port: int, user: str, password: str, channel: int = 1) -> dict:
+    """Find the working video address of a camera. Stops at the first wrong-login answer, so a
+    mistyped password costs one attempt (cameras lock the account after several)."""
+    from urllib.parse import quote
+    answered = False
+    for vendor, tpl in STREAM_PATHS:
+        path = tpl.format(ch=channel)
+        code = rtsp_describe(ip, port, path, user, password)
+        if code == 200:
+            cred = f"{quote(user, safe='')}:{quote(password, safe='')}@" if user else ""
+            return {"status": "ok", "vendor": vendor, "url": f"rtsp://{cred}{ip}:{port}{path}"}
+        if code in (401, 403):
+            return {"status": "auth"}
+        if code == 0 and not answered:
+            if _rtsp_check(ip, port, 2.0) is None:
+                return {"status": "unreachable"}
+        answered = answered or code != 0
+    return {"status": "not_found"}
 
 
 def discover(subnet: str | None = None) -> dict:

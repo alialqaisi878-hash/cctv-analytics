@@ -39,6 +39,10 @@ jobs:
           Invoke-WebRequest https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt -OutFile models/yolo11n.pt
           Invoke-WebRequest https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip -OutFile uv.zip
           Expand-Archive uv.zip -DestinationPath tools -Force
+          # the charts library ships inside the app, so the dashboard works without internet
+          New-Item -ItemType Directory -Force app/static/vendor | Out-Null
+          Invoke-WebRequest https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js -OutFile app/static/vendor/chart.umd.min.js
+          if ((Get-Item app/static/vendor/chart.umd.min.js).Length -lt 100000) { Write-Error "chart.js download looks wrong"; exit 1 }
           Get-Item tools/uv.exe
 
       - name: Build update package
@@ -85,9 +89,12 @@ jobs:
         shell: pwsh
         run: |
           $dir = $env:CCTV_DIR
-          # started the way the desktop shortcut starts it (launch.bat), minus opening a browser
-          $proc = Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat", "--serve" -WorkingDirectory $dir `
-                    -RedirectStandardOutput app-out.log -RedirectStandardError app-err.log -PassThru
+          # a fresh install has no cameras: check that, then use the sample-video configuration for the smoke test
+          if ((Get-Content "$dir\config.yaml" -Raw) -notmatch "(?m)^cameras: \[\]") { Write-Error "fresh config should have no cameras"; exit 1 }
+          Copy-Item tests\demo-config.yaml "$dir\config.yaml" -Force
+          # started exactly the way the desktop shortcut starts it: launch.bat opens the app window
+          # no -Wait: it would also wait for the app that launch.bat leaves running
+          Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir
           $ok = $false
           for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep 5
@@ -101,9 +108,27 @@ jobs:
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode
-          taskkill /PID $proc.Id /T /F | Out-Null
-          Get-Content app-out.log -Tail 10
-          Get-Content app-err.log -Tail 30
+          (Invoke-WebRequest http://localhost:8000/static/vendor/chart.umd.min.js -UseBasicParsing).StatusCode
+          $pic = Invoke-WebRequest http://localhost:8000/frame/demo -UseBasicParsing
+          Write-Host "live picture: $($pic.Headers['Content-Type']) $($pic.RawContentLength) bytes"
+          # settings and cameras can be changed from the dashboard and are kept in data\
+          $set = Invoke-RestMethod http://localhost:8000/api/settings -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes('{"site_name":"شركة الاختبار","alerts":{"max_occupancy":7}}'))
+          if ($set.site_name -ne "شركة الاختبار" -or $set.alerts.max_occupancy -ne 7) { Write-Error "settings were not saved"; exit 1 }
+          Get-Content "$dir\data\settings.yaml" -Encoding utf8
+          try { Invoke-RestMethod http://localhost:8000/api/cameras/add -Method Post -ContentType "application/json" -Body '{"ip":"127.0.0.1","port":9,"username":"admin","password":"x"}'; Write-Error "adding a camera that does not exist should fail"; exit 1 }
+          catch { Write-Host "add camera (nothing there): HTTP $($_.Exception.Response.StatusCode.value__)" }
+          # the app window must exist, and closing it must stop the program
+          $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
+          Write-Host "app window processes: $(@($win).Count) $(@($win).Name -join ',')"
+          if (-not $win) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "app window was not opened"; exit 1 }
+          $win | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          $stopped = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep 1
+            if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; break }
+          }
+          Get-Content "$dir\data\app.log" -Tail 15
+          if (-not $stopped) { Write-Error "program kept running after its window was closed"; exit 1 }
           if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
 
       - name: Run tests on Windows

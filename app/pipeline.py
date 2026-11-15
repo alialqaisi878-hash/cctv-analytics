@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
-import cv2
-import numpy as np
+# IP cameras: TCP transport avoids the broken/grey frames that UDP gives on busy networks
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 from .analytics import LineCounter, ZoneTracker
 from .config import in_working_hours

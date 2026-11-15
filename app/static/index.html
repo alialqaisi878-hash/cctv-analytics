@@ -3,225 +3,529 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>تحليلات الكاميرات</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<title>CCTV Analytics</title>
+<script src="/static/vendor/chart.umd.min.js" onerror="this.onerror=null;var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';document.head.appendChild(s)"></script>
 <style>
-  :root { --bg:#0f1419; --card:#182029; --line:#26313d; --text:#e6edf3; --muted:#8b98a5; --accent:#3fb6a8; --in:#3fb6a8; --out:#e8a33d; --warn:#e5534b; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif; background:var(--bg); color:var(--text); }
-  header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:20px; margin:0; }
-  header .meta { color:var(--muted); font-size:14px; }
-  input[type=date], input[type=text], textarea { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
-  button { background:var(--accent); color:#06201d; border:0; border-radius:8px; padding:8px 14px; font:inherit; font-weight:600; cursor:pointer; }
-  button.secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
-  button:disabled { opacity:.5; cursor:wait; }
-  main { padding:16px 20px; display:grid; gap:16px; max-width:1500px; margin:auto; }
-  .notice { background:#1d2a1f; border:1px solid #2f4a33; color:#cfe8d2; padding:10px 14px; border-radius:10px; font-size:14px; }
-  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
-  .kpi { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
-  .kpi .v { font-size:30px; font-weight:700; margin-top:4px; font-variant-numeric: tabular-nums; }
-  .kpi .l { color:var(--muted); font-size:13px; }
-  .grid2 { display:grid; grid-template-columns: 1.3fr 1fr; gap:16px; }
-  @media (max-width: 1000px) { .grid2 { grid-template-columns:1fr; } }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0; }
-  .card h2 { font-size:16px; margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
-  .cams { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }
-  .cam img { width:100%; border-radius:8px; background:#000; aspect-ratio:16/9; object-fit:contain; }
-  .cam .row { display:flex; justify-content:space-between; font-size:13px; color:var(--muted); margin-top:6px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-inline-end:6px; background:var(--muted); }
-  .dot.online { background:var(--in); } .dot.offline { background:var(--warn); }
+  :root { --bg:#0c1117; --side:#10171f; --card:#151d27; --card2:#1a2430; --line:#243040; --text:#e8eef4; --muted:#8a99a8;
+          --accent:#2fc3b0; --accent-ink:#04211d; --in:#2fc3b0; --out:#f0a840; --warn:#ef6461; --ok:#3ecf8e; --radius:14px; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { height:100%; }
+  body { margin:0; font-family:"Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif; background:var(--bg); color:var(--text); font-size:15px; }
+  .app { display:flex; min-height:100%; }
+  aside { width:230px; flex:none; background:var(--side); border-inline-end:1px solid var(--line); display:flex; flex-direction:column; padding:18px 12px; position:sticky; top:0; height:100vh; }
+  .brand { display:flex; align-items:center; gap:10px; padding:4px 8px 18px; }
+  .brand .logo { width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,var(--accent),#1c8fd6); display:grid; place-items:center; color:#fff; }
+  .brand b { display:block; font-size:16px; } .brand small { color:var(--muted); font-size:12px; }
+  nav { display:grid; gap:4px; }
+  nav button { display:flex; align-items:center; gap:10px; width:100%; background:transparent; color:var(--muted); border:0; border-radius:10px; padding:11px 12px; font:inherit; font-weight:600; cursor:pointer; text-align:start; }
+  nav button:hover { background:var(--card); color:var(--text); }
+  nav button.on { background:rgba(47,195,176,.14); color:var(--accent); }
+  nav svg, .ico { width:20px; height:20px; flex:none; }
+  aside .foot { margin-top:auto; color:var(--muted); font-size:12px; padding:8px; line-height:1.7; }
+  main { flex:1; min-width:0; padding:22px 26px 40px; }
+  .top { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:18px; }
+  .top h1 { margin:0; font-size:24px; } .top .sub { color:var(--muted); font-size:13px; margin-top:2px; }
+  .tools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  input, select, textarea { background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:9px 11px; font:inherit; }
+  input:focus, select:focus, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  input[type=checkbox] { width:18px; height:18px; accent-color:var(--accent); padding:0; }
+  .btn { background:var(--accent); color:var(--accent-ink); border:0; border-radius:10px; padding:9px 16px; font:inherit; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:8px; text-decoration:none; }
+  .btn.ghost { background:transparent; color:var(--text); border:1px solid var(--line); font-weight:600; }
+  .btn.ghost:hover { background:var(--card2); }
+  .btn.danger { background:transparent; color:var(--warn); border:1px solid #5a2b2b; font-weight:600; }
+  .btn.small { padding:6px 11px; font-size:13px; }
+  .btn:disabled { opacity:.5; cursor:wait; }
+  .view { display:none; gap:18px; } .view.on { display:grid; }
+  .banner { border-radius:12px; padding:11px 14px; font-size:14px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .banner.notice { background:#13251d; border:1px solid #1f4634; color:#c4ead5; }
+  .banner.update { background:#14233a; border:1px solid #27487a; color:#cfe0f8; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:16px; position:relative; overflow:hidden; }
+  .kpi::before { content:""; position:absolute; inset-inline-start:0; top:0; bottom:0; width:4px; background:var(--k,var(--accent)); }
+  .kpi .l { color:var(--muted); font-size:13px; } .kpi .v { font-size:32px; font-weight:700; margin-top:6px; font-variant-numeric:tabular-nums; }
+  .grid2 { display:grid; grid-template-columns:1.25fr 1fr; gap:18px; }
+  @media (max-width:1100px) { .grid2 { grid-template-columns:1fr; } }
+  @media (max-width:800px) { aside { width:64px; padding:14px 8px; } aside .brand div, aside nav span, aside .foot { display:none; } main { padding:16px; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:16px; min-width:0; }
+  .card h2 { font-size:16px; margin:0 0 12px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .cams { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
+  .cam { background:var(--card2); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .cam .pic { background:#000; aspect-ratio:16/9; display:grid; place-items:center; color:var(--muted); font-size:13px; }
+  .cam .pic img { width:100%; height:100%; object-fit:contain; display:block; }
+  .cam .info { padding:10px 12px; display:grid; gap:8px; }
+  .cam .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .cam .name { font-weight:700; } .cam .st { color:var(--muted); font-size:13px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; border-radius:99px; padding:3px 10px; font-size:12px; font-weight:600; background:#222c38; color:var(--muted); }
+  .pill.ok { background:rgba(62,207,142,.14); color:var(--ok); } .pill.bad { background:rgba(239,100,97,.14); color:var(--warn); }
+  .pill i { width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .counts { display:flex; gap:14px; font-size:13px; color:var(--muted); } .counts b { color:var(--text); font-variant-numeric:tabular-nums; }
   table { width:100%; border-collapse:collapse; font-size:14px; }
-  th, td { text-align:right; padding:7px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:500; }
-  td code { direction:ltr; display:inline-block; font-size:12px; color:#9fd3cc; word-break:break-all; }
-  .answer { white-space:pre-wrap; line-height:1.7; background:#11181f; border-radius:8px; padding:12px; margin-top:10px; max-height:520px; overflow:auto; }
-  .chips { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
-  .chips button { font-size:13px; padding:5px 10px; }
-  .muted { color:var(--muted); font-size:13px; }
-  .alert { color:#f2b8b5; }
-  canvas { max-height:280px; }
+  th, td { text-align:start; padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:13px; } tr:last-child td { border-bottom:0; }
+  .muted { color:var(--muted); font-size:13px; } .ltr { direction:ltr; unicode-bidi:embed; display:inline-block; }
+  .empty { text-align:center; padding:34px 16px; color:var(--muted); display:grid; gap:12px; justify-items:center; }
+  .empty b { color:var(--text); font-size:17px; }
+  .answer { line-height:1.85; background:#0f161e; border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-top:12px; max-height:560px; overflow:auto; }
+  .answer h3 { margin:10px 0 6px; font-size:16px; } .answer ul { margin:4px 0; padding-inline-start:20px; } .answer p { margin:6px 0; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  canvas.chart { max-height:280px; }
+  details { border-bottom:1px solid var(--line); padding:9px 0; } details:last-child { border-bottom:0; } summary { cursor:pointer; font-weight:600; }
+  .form { display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); }
+  .field { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); }
+  .field:last-child { border-bottom:0; } .field label { flex:1; } .field small { display:block; color:var(--muted); font-size:12px; margin-top:2px; }
+  .field input[type=text], .field input[type=password], .field input[type=number], .field input[type=time] { width:170px; }
+  .days { display:flex; gap:6px; flex-wrap:wrap; } .days label { background:var(--card2); border:1px solid var(--line); border-radius:8px; padding:5px 9px; font-size:13px; cursor:pointer; flex:none; }
+  .days input { display:none; } .days label:has(input:checked) { background:rgba(47,195,176,.16); border-color:var(--accent); color:var(--accent); }
+  dialog { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:16px; padding:20px; width:min(460px,92vw); }
+  dialog.wide { width:min(900px,95vw); } dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog h3 { margin:0 0 14px; font-size:18px; } dialog .f { display:grid; gap:5px; margin-bottom:12px; } dialog .f input { width:100%; }
+  dialog .acts { display:flex; gap:8px; justify-content:flex-start; margin-top:14px; flex-wrap:wrap; align-items:center; }
+  .err { color:var(--warn); font-size:14px; min-height:20px; }
+  .stage { position:relative; background:#000; border-radius:10px; overflow:hidden; line-height:0; cursor:crosshair; min-height:160px; }
+  .stage img { width:100%; height:auto; display:block; } .stage canvas { position:absolute; inset:0; width:100%; height:100%; }
+  #toast { position:fixed; bottom:22px; inset-inline-start:50%; transform:translateX(50%); background:#1f2c3a; border:1px solid var(--line); padding:10px 18px; border-radius:10px; opacity:0; pointer-events:none; transition:opacity .2s; z-index:50; }
+  #toast.on { opacity:1; }
+  #print-area { display:none; }
+  @media print {
+    body { background:#fff; color:#000; } .app { display:none; } #print-area { display:block; padding:20px; line-height:1.9; }
+    #print-area h3 { font-size:18px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div><h1 id="site">تحليلات الكاميرات</h1><div class="meta" id="meta"></div></div>
-  <div style="display:flex;gap:8px;align-items:center">
-    <label class="muted" for="day">اليوم</label><input type="date" id="day">
-    <a id="csv" href="#"><button class="secondary">تصدير CSV</button></a>
-  </div>
-</header>
-<main>
-  <div class="notice" id="notice" hidden></div>
-  <div class="notice" id="update" hidden style="background:#1b2533;border-color:#2c4a6e;color:#cfe0f5;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"></div>
-
-  <section class="kpis">
-    <div class="kpi"><div class="l">دخلوا</div><div class="v" id="k-in">-</div></div>
-    <div class="kpi"><div class="l">طلعوا</div><div class="v" id="k-out">-</div></div>
-    <div class="kpi"><div class="l">موجودين تقديرياً</div><div class="v" id="k-net">-</div></div>
-    <div class="kpi"><div class="l">ظاهرين بالكاميرات الآن</div><div class="v" id="k-now">-</div></div>
-    <div class="kpi"><div class="l">ساعة الذروة</div><div class="v" id="k-peak">-</div></div>
-    <div class="kpi"><div class="l">أول / آخر دخول</div><div class="v" id="k-first" style="font-size:22px">-</div></div>
-  </section>
-
-  <section class="card">
-    <h2>البث المباشر <span class="muted" id="blurinfo"></span></h2>
-    <div class="cams" id="cams"></div>
-  </section>
-
-  <section class="grid2">
-    <div class="card"><h2>الدخول والخروج حسب الساعة</h2><canvas id="hourly"></canvas></div>
-    <div class="card"><h2>آخر 7 أيام</h2><canvas id="trend"></canvas></div>
-  </section>
-
-  <section class="grid2">
-    <div class="card">
-      <h2>المساعد الذكي <span class="muted" id="ai-state"></span></h2>
-      <div class="chips">
-        <button class="secondary" data-q="شنو أكثر ساعات الزحمة اليوم؟ وشنو تنصحني؟">ساعات الزحمة</button>
-        <button class="secondary" data-q="قارن اليوم بالأسبوع الماضي">مقارنة بالأسبوع</button>
-        <button class="secondary" data-q="شكد يبقون الناس بمنطقة الاستقبال بالمعدل؟ وهل اكو انتظار طويل؟">مدة الانتظار</button>
-        <button class="secondary" data-q="اكو تنبيهات خارج الدوام هذا الأسبوع؟">تنبيهات خارج الدوام</button>
-      </div>
-      <div style="display:flex;gap:8px">
-        <input type="text" id="q" placeholder="اسأل عن الحركة، الزحمة، المناطق..." style="flex:1">
-        <button id="ask">اسأل</button>
-        <button id="report" class="secondary">تقرير اليوم</button>
-      </div>
-      <div class="answer" id="answer" hidden></div>
+<div class="app">
+  <aside>
+    <div class="brand">
+      <span class="logo"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l12-3 2 7-12 3z"/><path d="M17 8l4 1-1 4-3-1"/><path d="M7 14v5h5"/></svg></span>
+      <div><b>CCTV Analytics</b><small id="site">...</small></div>
     </div>
-    <div class="card">
-      <h2>المناطق ومدة البقاء</h2>
-      <table><thead><tr><th>المنطقة</th><th>زيارات</th><th>متوسط البقاء</th><th>أطول بقاء</th></tr></thead><tbody id="zones"></tbody></table>
-      <h2 style="margin-top:16px">التنبيهات</h2>
-      <table><tbody id="alerts"></tbody></table>
-    </div>
-  </section>
+    <nav>
+      <button data-view="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>الرئيسية</span></button>
+      <button data-view="cameras"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l12-3 2 7-12 3z"/><path d="M17 8l4 1-1 4-3-1"/><path d="M7 14v5h5"/></svg><span>الكاميرات</span></button>
+      <button data-view="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h7M9 17h7"/></svg><span>التقارير</span></button>
+      <button data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>الإعدادات</span></button>
+    </nav>
+    <div class="foot"><div id="ver"></div><div id="ai-state"></div></div>
+  </aside>
 
-  <section class="card">
-    <h2>اكتشاف الكاميرات على الشبكة
-      <span style="display:flex;gap:8px"><input type="text" id="subnet" placeholder="تلقائي، مثل 192.168.1.0/24" dir="ltr"><button id="discover">ابحث</button></span>
-    </h2>
-    <div class="muted" id="disc-state">يبحث عن كاميرات ONVIF ويفحص منافذ RTSP (554 و 8554) على الشبكة المحلية.</div>
-    <table><thead><tr><th>IP</th><th>الطريقة</th><th>الاسم / الموديل</th><th>روابط RTSP مقترحة (ضيف اسم المستخدم والرمز)</th></tr></thead><tbody id="disc"></tbody></table>
-  </section>
+  <main>
+    <div class="banner update" id="update" hidden></div>
 
-  <section class="card">
-    <h2>التقارير السابقة</h2>
-    <div id="reports" class="muted">لا توجد تقارير بعد.</div>
-  </section>
-</main>
+    <!-- ===== الرئيسية ===== -->
+    <section class="view on" id="v-home">
+      <div class="top">
+        <div><h1>الرئيسية</h1><div class="sub">حركة الدخول والخروج والازدحام</div></div>
+        <div class="tools"><label class="muted" for="day">اليوم</label><input type="date" id="day"><a id="csv" class="btn ghost" href="#">تصدير CSV</a></div>
+      </div>
+      <div class="banner notice" id="notice" hidden style="margin:0"></div>
+      <div class="kpis">
+        <div class="kpi" style="--k:var(--in)"><div class="l">دخلوا</div><div class="v" id="k-in">-</div></div>
+        <div class="kpi" style="--k:var(--out)"><div class="l">طلعوا</div><div class="v" id="k-out">-</div></div>
+        <div class="kpi" style="--k:#5b9cf5"><div class="l">موجودين تقديرياً</div><div class="v" id="k-net">-</div></div>
+        <div class="kpi" style="--k:#b48cf2"><div class="l">ظاهرين بالكاميرات الآن</div><div class="v" id="k-now">-</div></div>
+        <div class="kpi" style="--k:#ef6461"><div class="l">ساعة الذروة</div><div class="v" id="k-peak">-</div></div>
+        <div class="kpi" style="--k:#8a99a8"><div class="l">أول / آخر دخول</div><div class="v" id="k-first" style="font-size:22px;margin-top:14px">-</div></div>
+      </div>
+      <div class="card"><h2>البث المباشر <span class="muted" id="blurinfo"></span></h2><div class="cams" id="home-cams"></div></div>
+      <div class="grid2">
+        <div class="card"><h2>الدخول والخروج حسب الساعة</h2><canvas class="chart" id="hourly"></canvas></div>
+        <div class="card"><h2>آخر 7 أيام</h2><canvas class="chart" id="trend"></canvas></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>التنبيهات</h2><table><tbody id="alerts"></tbody></table></div>
+        <div class="card"><h2>المناطق ومدة البقاء</h2><table><thead><tr><th>المنطقة</th><th>زيارات</th><th>متوسط البقاء</th><th>أطول بقاء</th></tr></thead><tbody id="zones"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ===== الكاميرات ===== -->
+    <section class="view" id="v-cameras">
+      <div class="top">
+        <div><h1>الكاميرات</h1><div class="sub">أضف كاميرات الشبكة وحدّد خط العد لكل كاميرا</div></div>
+        <div class="tools"><button class="btn ghost" id="add-manual">إضافة يدوية بالـ IP</button><button class="btn" id="discover">بحث عن الكاميرات بالشبكة</button></div>
+      </div>
+      <div class="card" id="disc-card" hidden>
+        <h2>الكاميرات الموجودة على الشبكة <span class="muted" id="disc-state"></span></h2>
+        <table><thead><tr><th>العنوان IP</th><th>الاسم / الموديل</th><th>الحالة</th><th></th></tr></thead><tbody id="disc"></tbody></table>
+        <div class="muted" style="margin-top:10px">ما لگيت كاميرتك؟ تگدر تحدد الشبكة: <input type="text" id="subnet" class="ltr" placeholder="192.168.1.0/24" style="width:170px;padding:5px 8px"></div>
+      </div>
+      <div class="card"><h2>الكاميرات المضافة</h2><div class="cams" id="cam-list"></div></div>
+    </section>
+
+    <!-- ===== التقارير ===== -->
+    <section class="view" id="v-reports">
+      <div class="top">
+        <div><h1>التقارير</h1><div class="sub">تقارير يومية وأسئلة للمساعد الذكي</div></div>
+        <div class="tools"><label class="muted" for="rep-day">يوم التقرير</label><input type="date" id="rep-day"><button class="btn" id="report">أنشئ التقرير</button><button class="btn ghost" id="print" disabled>طباعة / PDF</button></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>المساعد الذكي</h2>
+          <div class="chips">
+            <button class="btn ghost small" data-q="شنو أكثر ساعات الزحمة اليوم؟ وشنو تنصحني؟">ساعات الزحمة</button>
+            <button class="btn ghost small" data-q="قارن اليوم بالأسبوع الماضي">مقارنة بالأسبوع</button>
+            <button class="btn ghost small" data-q="اكتب ملخص أسبوعي لحركة الدخول والخروج مع توصيات">ملخص أسبوعي</button>
+            <button class="btn ghost small" data-q="اكو تنبيهات خارج الدوام هذا الأسبوع؟">تنبيهات خارج الدوام</button>
+          </div>
+          <div style="display:flex;gap:8px"><input type="text" id="q" placeholder="اسأل عن الحركة، الزحمة، أوقات الذروة..." style="flex:1;min-width:0"><button class="btn" id="ask">اسأل</button></div>
+          <div class="answer" id="answer" hidden></div>
+        </div>
+        <div class="card"><h2>التقارير المحفوظة</h2><div id="reports" class="muted">لا توجد تقارير بعد. اختر يوم واضغط "أنشئ التقرير".</div></div>
+      </div>
+      <div class="card"><h2>ملخص آخر 30 يوم</h2><table><thead><tr><th>اليوم</th><th>دخول</th><th>خروج</th><th></th></tr></thead><tbody id="month"></tbody></table></div>
+    </section>
+
+    <!-- ===== الإعدادات ===== -->
+    <section class="view" id="v-settings">
+      <div class="top">
+        <div><h1>الإعدادات</h1><div class="sub">تنحفظ مباشرة وما تحتاج إعادة تشغيل</div></div>
+        <div class="tools"><span class="muted" id="set-state"></span><button class="btn" id="save">حفظ الإعدادات</button></div>
+      </div>
+      <div class="form">
+        <div class="card"><h2>عام وأوقات الدوام</h2>
+          <div class="field"><label for="s-site">اسم المكان</label><input type="text" id="s-site"></div>
+          <div class="field"><label for="s-start">بداية الدوام</label><input type="time" id="s-start"></div>
+          <div class="field"><label for="s-end">نهاية الدوام</label><input type="time" id="s-end"></div>
+          <div class="field" style="display:block"><label>أيام الدوام</label><div class="days" id="s-days" style="margin-top:8px"></div></div>
+        </div>
+        <div class="card"><h2>التنبيهات</h2>
+          <div class="field"><label for="s-after">تنبيه عند وجود أشخاص خارج الدوام</label><input type="checkbox" id="s-after"></div>
+          <div class="field"><label for="s-max">حد الازدحام<small>ينبّه إذا زاد عدد الظاهرين بالكاميرا. 0 = بدون</small></label><input type="number" id="s-max" min="0" max="1000"></div>
+          <div class="field"><label for="s-cool">أقل مدة بين تنبيهين (دقيقة)</label><input type="number" id="s-cool" min="1" max="1440"></div>
+        </div>
+        <div class="card"><h2>المساعد الذكي والتقارير</h2>
+          <div class="field"><label for="s-key">مفتاح Claude API<small id="s-key-state"></small></label><input type="password" id="s-key" class="ltr" autocomplete="off" placeholder="sk-ant-..."></div>
+          <div class="field"><label for="s-rep">وقت التقرير اليومي التلقائي<small>اتركه فارغ لإيقافه</small></label><input type="time" id="s-rep"></div>
+        </div>
+        <div class="card"><h2>الخصوصية</h2>
+          <div class="field"><label for="s-blur">تمويه الوجوه بالبث المباشر</label><input type="checkbox" id="s-blur"></div>
+          <div class="field"><label for="s-notice">إظهار تنبيه المراقبة بالرئيسية</label><input type="checkbox" id="s-notice"></div>
+          <div class="field"><label for="s-ret">مدة حفظ البيانات (يوم)<small>الأقدم ينحذف تلقائياً. الفيديو ما ينحفظ أبداً</small></label><input type="number" id="s-ret" min="1" max="365"></div>
+        </div>
+        <div class="card"><h2>الأداء</h2>
+          <div class="field"><label for="s-fps">عدد الصور المحللة بالثانية لكل كاميرا<small>أقل = ضغط أقل على الحاسبة</small></label><input type="number" id="s-fps" min="1" max="30"></div>
+          <div class="field"><label for="s-conf">حساسية كشف الأشخاص<small>من 0.05 إلى 0.95. أقل = يكشف أكثر</small></label><input type="number" id="s-conf" min="0.05" max="0.95" step="0.05"></div>
+        </div>
+        <div class="card"><h2>الحماية والتحديثات</h2>
+          <div class="field"><label for="s-pass">كلمة مرور للبرنامج<small id="s-pass-state"></small></label><input type="password" id="s-pass" autocomplete="new-password"></div>
+          <div class="field"><label for="s-auto">تثبيت التحديثات تلقائياً خارج الدوام</label><input type="checkbox" id="s-auto"></div>
+          <div class="field"><label>الإصدار الحالي: <span id="s-ver" class="ltr"></span><small id="s-upd"></small></label><button class="btn ghost small" id="upd-check">تحقق من التحديثات</button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="dlg-add">
+  <h3>إضافة كاميرا</h3>
+  <div class="f"><label for="a-ip">عنوان الكاميرا (IP)</label><input type="text" id="a-ip" class="ltr" placeholder="192.168.1.64"></div>
+  <div class="f"><label for="a-name">اسم الكاميرا</label><input type="text" id="a-name" placeholder="مثلاً: المدخل الرئيسي"></div>
+  <div class="f"><label for="a-user">اسم المستخدم</label><input type="text" id="a-user" class="ltr" value="admin" autocomplete="off"></div>
+  <div class="f"><label for="a-pass">كلمة المرور</label><input type="password" id="a-pass" class="ltr" autocomplete="off"></div>
+  <div class="f"><label for="a-ch">رقم القناة <span class="muted">(للـ DVR/NVR، وإلا خلّيه 1)</span></label><input type="number" id="a-ch" value="1" min="1" max="64"></div>
+  <div class="err" id="a-err"></div>
+  <div class="acts"><button class="btn" id="a-ok">إضافة</button><button class="btn ghost" data-close>إلغاء</button></div>
+</dialog>
+
+<dialog id="dlg-line" class="wide">
+  <h3>خط العد: <span id="l-name"></span></h3>
+  <div class="muted" style="margin-bottom:10px">اضغط نقطتين على الصورة لرسم الخط عند الباب. السهم بالصورة يبيّن اتجاه "الدخول"، وإذا كان معكوس فعّل "اعكس الاتجاه".</div>
+  <div class="stage" id="l-stage"><img id="l-img" alt=""><canvas id="l-canvas"></canvas></div>
+  <div class="err" id="l-err"></div>
+  <div class="acts"><button class="btn" id="l-ok">حفظ الخط</button><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="l-inv"> اعكس الاتجاه</label><button class="btn ghost" id="l-reset">ارسم من جديد</button><button class="btn ghost" data-close>إغلاق</button></div>
+</dialog>
+
+<div id="toast"></div>
+<div id="print-area"></div>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const j = async (url, opts) => { const r = await fetch(url, opts); if (!r.ok) throw new Error(await r.text()); return r.json(); };
+const j = async (url, opts) => {
+  const r = await fetch(url, opts);
+  if (!r.ok) { let m = await r.text(); try { m = JSON.parse(m).detail || m; } catch (_) {} throw new Error(m); }
+  return r.json();
+};
 const post = (url, body) => j(url, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body||{})});
-let charts = {}, today = null;
+const toast = (msg) => { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("on"), 2800); };
+let charts = {}, today = null, view = "home", camSig = null, lastReport = "";
+
+// simple formatting for report text (headings, bullets, bold)
+function rich(text) {
+  let html = "", list = false;
+  for (const raw of String(text || "").split("\n")) {
+    let line = esc(raw).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+    const li = line.match(/^\s*[-•*]\s+(.*)/), h = line.match(/^#{1,4}\s+(.*)/);
+    if (li) { if (!list) { html += "<ul>"; list = true; } html += `<li>${li[1]}</li>`; continue; }
+    if (list) { html += "</ul>"; list = false; }
+    if (h) html += `<h3>${h[1]}</h3>`; else if (line.trim()) html += `<p>${line}</p>`;
+  }
+  return html + (list ? "</ul>" : "");
+}
+
+// ---------- navigation ----------
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => show(b.dataset.view));
+function show(v) {
+  view = v;
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.view === v));
+  document.querySelectorAll(".view").forEach(s => s.classList.toggle("on", s.id === "v-" + v));
+  if (v === "settings") loadSettings();
+  if (v === "reports") loadReports();
+  if (v === "home") loadStats();
+}
+document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
+
+// ---------- live pictures: one small request per picture, only for what is on screen ----------
+function pump(img) {
+  if (img.dataset.pumping) return;
+  img.dataset.pumping = 1;
+  const next = () => {
+    if (!img.isConnected) return;
+    if (img.parentElement.offsetParent === null) { setTimeout(next, 600); return; }   // hidden page or closed dialog
+    const probe = new Image();
+    probe.onload = () => { img.src = probe.src; img.hidden = false; setTimeout(next, 180); };
+    probe.onerror = () => setTimeout(next, 1500);
+    probe.src = `/frame/${encodeURIComponent(img.dataset.cam)}?t=${Date.now()}`;
+  };
+  next();
+}
 
 function chart(id, cfg) {
-  if (typeof Chart === "undefined") { $(id).replaceWith(Object.assign(document.createElement("div"), {id, className:"muted", textContent:"الرسوم البيانية تحتاج اتصال إنترنت لتحميل مكتبة Chart.js."})); return; }
-  if (!($(id) instanceof HTMLCanvasElement)) return;
+  if (typeof Chart === "undefined" || !($(id) instanceof HTMLCanvasElement)) return;
   if (charts[id]) { charts[id].data = cfg.data; charts[id].update(); return; }
-  Chart.defaults.color = "#8b98a5"; Chart.defaults.borderColor = "#26313d";
+  Chart.defaults.color = "#8a99a8"; Chart.defaults.borderColor = "#243040"; Chart.defaults.font.family = "Segoe UI, Tahoma, sans-serif";
   charts[id] = new Chart($(id), cfg);
 }
 
 async function loadInfo() {
   const i = await j("/api/info");
-  today = i.today; if (!$("day").value) $("day").value = today;
-  $("site").textContent = i.site_name;
-  $("meta").textContent = `الإصدار ${i.version} · مدة حفظ البيانات: ${i.privacy.retention_days} يوم`;
-  if (i.privacy.show_notice) { $("notice").hidden = false; $("notice").textContent = i.privacy.notice_text; }
+  today = i.today;
+  if (!$("day").value) $("day").value = today;
+  if (!$("rep-day").value) $("rep-day").value = today;
+  $("site").textContent = i.site_name; document.title = `${i.site_name} · CCTV Analytics`;
+  $("ver").textContent = `الإصدار ${i.version}`; $("s-ver").textContent = i.version;
+  $("notice").hidden = !i.privacy.show_notice; $("notice").textContent = i.privacy.notice_text;
   $("blurinfo").textContent = i.privacy.blur_people ? "الوجوه مموّهة" : "";
-  $("ai-state").textContent = i.ai_enabled ? "Claude مفعّل" : "بدون مفتاح API (تقرير أساسي فقط)";
+  $("ai-state").textContent = i.ai_enabled ? "المساعد الذكي: مفعّل" : "المساعد الذكي: بدون مفتاح";
+}
+
+// ---------- cameras ----------
+const statusPill = (c) => c.status === "online" ? `<span class="pill ok"><i></i>شغّالة</span>`
+  : (c.status === "starting" || c.status === "reconnecting") ? `<span class="pill"><i></i>جاري الاتصال</span>`
+  : c.status === "disabled" ? `<span class="pill"><i></i>متوقفة</span>` : `<span class="pill bad"><i></i>غير متصلة</span>`;
+
+function camCard(c, manage) {
+  return `<div class="cam"><div class="pic"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
+    <div class="info"><div class="row"><span class="name">${esc(c.name)}</span><span data-pill="${esc(c.id)}"></span></div>
+    <div class="row"><span class="counts" data-counts="${esc(c.id)}"></span><span class="st" data-st="${esc(c.id)}"></span></div>
+    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
+    </div></div>`;
 }
 
 async function loadCams() {
   const cams = await j("/api/cameras");
-  const box = $("cams");
-  if (!box.dataset.init) {
-    box.innerHTML = cams.length ? cams.map(c => `
-      <div class="cam"><img src="/stream/${encodeURIComponent(c.id)}" alt="${esc(c.name)}">
-      <div class="row"><span><span class="dot" id="dot-${esc(c.id)}"></span>${esc(c.name)}</span><span id="st-${esc(c.id)}"></span></div></div>`).join("")
-      : `<div class="muted">لا توجد كاميرات. أضفها في config.yaml أو استخدم البحث بالأسفل.</div>`;
-    box.dataset.init = 1;
+  const sig = cams.map(c => c.id + c.name).join("|");
+  if (sig !== camSig) {
+    camSig = sig;
+    const none = (msg) => `<div class="empty" style="grid-column:1/-1"><b>ماكو كاميرات مضافة بعد</b><span>${msg}</span><button class="btn" data-goto-add>إضافة كاميرا</button></div>`;
+    $("home-cams").innerHTML = cams.length ? cams.map(c => camCard(c, false)).join("") : none("أضف كاميراتك حتى يبدأ العد والتحليل.");
+    $("cam-list").innerHTML = cams.length ? cams.map(c => camCard(c, true)).join("") : none("اضغط \"بحث عن الكاميرات بالشبكة\" واختر كاميرتك.");
+    document.querySelectorAll(".cam img[data-cam]").forEach(img => { img.onload = () => { const w = img.parentElement.querySelector("[data-wait]"); if (w) w.remove(); }; pump(img); });
+    document.querySelectorAll("[data-goto-add]").forEach(b => b.onclick = () => { show("cameras"); $("discover").click(); });
+    document.querySelectorAll("[data-line]").forEach(b => b.onclick = () => openLine(b.dataset.line));
+    document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => delCam(b.dataset.del, b.dataset.name));
   }
   let now = 0;
   for (const c of cams) {
     now += c.people_now || 0;
-    const dot = $("dot-" + c.id); if (dot) dot.className = "dot " + (c.status === "online" ? "online" : "offline");
-    const st = $("st-" + c.id);
-    if (st) st.textContent = `${c.status} · ${c.fps ?? 0} fps · ${c.people_now ?? 0} أشخاص`;
+    const tin = (c.lines || []).reduce((a, l) => a + l.in, 0), tout = (c.lines || []).reduce((a, l) => a + l.out, 0);
+    document.querySelectorAll(`[data-pill="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = statusPill(c));
+    document.querySelectorAll(`[data-counts="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = `<span>دخول <b>${tin}</b></span><span>خروج <b>${tout}</b></span>`);
+    document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.textContent = c.status === "online" ? `${c.people_now ?? 0} بالصورة الآن` : "");
   }
   $("k-now").textContent = now;
 }
 
+async function delCam(id, name) {
+  if (!confirm(`حذف الكاميرا "${name}"؟ الإحصائيات القديمة تبقى محفوظة.`)) return;
+  try { await j(`/api/cameras/${encodeURIComponent(id)}`, {method:"DELETE"}); toast("انحذفت الكاميرا"); loadCams(); }
+  catch (e) { toast(e.message); }
+}
+
+$("discover").onclick = async () => {
+  $("disc-card").hidden = false; $("discover").disabled = true; $("disc").innerHTML = "";
+  $("disc-state").textContent = "جاري البحث... (10 إلى 30 ثانية)";
+  try {
+    const r = await post("/api/discover", {subnet: $("subnet").value.trim()});
+    const added = new Set((await j("/api/cameras")).map(c => c.id));
+    $("disc-state").textContent = `وُجدت ${r.cameras.length} · حاسبتك ${r.local_ip}` + (r.errors.length ? ` · ${r.errors.join("، ")}` : "");
+    $("disc").innerHTML = r.cameras.length ? r.cameras.map(c => {
+      const isAdded = added.has("cam_" + c.ip.replaceAll(".", "_"));
+      return `<tr><td><span class="ltr">${esc(c.ip)}</span></td><td>${esc(c.name || c.server || "كاميرا")}<div class="muted">${esc(c.model || "")}</div></td>
+        <td>${isAdded ? `<span class="pill ok"><i></i>مضافة</span>` : `<span class="pill">غير مضافة</span>`}</td>
+        <td style="text-align:end"><button class="btn small" data-add-ip="${esc(c.ip)}" data-port="${(c.rtsp_ports || [])[0] || 554}" data-nm="${esc(c.name || "")}">${isAdded ? "إضافة قناة ثانية" : "إضافة"}</button></td></tr>`; }).join("")
+      : `<tr><td colspan="4" class="muted">ما لگيت كاميرات. تأكد إن الحاسبة والكاميرات على نفس الشبكة، أو استخدم "إضافة يدوية بالـ IP".</td></tr>`;
+    document.querySelectorAll("[data-add-ip]").forEach(b => b.onclick = () => openAdd(b.dataset.addIp, b.dataset.port, b.dataset.nm));
+  } catch (e) { $("disc-state").textContent = "خطأ: " + e.message; }
+  $("discover").disabled = false;
+};
+$("add-manual").onclick = () => openAdd("", 554, "");
+
+let addPort = 554;
+function openAdd(ip, port, name) {
+  addPort = +port || 554;
+  $("a-ip").value = ip; $("a-ip").readOnly = !!ip; $("a-name").value = name || ""; $("a-pass").value = ""; $("a-ch").value = 1; $("a-err").textContent = "";
+  $("dlg-add").showModal(); (ip ? $("a-pass") : $("a-ip")).focus();
+}
+$("a-ok").onclick = async () => {
+  $("a-ok").disabled = true; $("a-err").style.color = "var(--muted)"; $("a-err").textContent = "جاري الاتصال بالكاميرا...";
+  try {
+    const r = await post("/api/cameras/add", {ip: $("a-ip").value.trim(), port: addPort, name: $("a-name").value.trim(),
+      username: $("a-user").value.trim(), password: $("a-pass").value, channel: +$("a-ch").value || 1});
+    $("dlg-add").close(); toast(`انضافت الكاميرا: ${r.name}`); await loadCams(); openLine(r.id);
+  } catch (e) { $("a-err").style.color = ""; $("a-err").textContent = e.message; }
+  $("a-ok").disabled = false;
+};
+$("dlg-add").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("a-ok").click(); } });
+
+// ---------- counting line editor ----------
+let lineCam = null, linePts = [];
+async function openLine(id) {
+  lineCam = id; $("l-err").textContent = "";
+  const s = await j(`/api/cameras/${encodeURIComponent(id)}/setup`);
+  $("l-name").textContent = s.name;
+  const ln = s.lines[0]; linePts = ln ? ln.points.map(p => [...p]) : []; $("l-inv").checked = !!(ln && ln.invert);
+  const img = $("l-img"); img.dataset.cam = id; img.removeAttribute("src"); img.onload = drawLine;
+  $("dlg-line").showModal(); pump(img); drawLine();
+}
+function drawLine() {
+  const c = $("l-canvas"), r = $("l-stage").getBoundingClientRect();
+  c.width = r.width; c.height = r.height;
+  const g = c.getContext("2d"); g.clearRect(0, 0, c.width, c.height);
+  const P = p => [p[0] * c.width, p[1] * c.height];
+  if (linePts.length === 2) { g.strokeStyle = "#ffd54a"; g.lineWidth = 4; g.setLineDash([10, 6]); g.beginPath(); g.moveTo(...P(linePts[0])); g.lineTo(...P(linePts[1])); g.stroke(); g.setLineDash([]); }
+  for (const p of linePts) { g.fillStyle = "#ffd54a"; g.strokeStyle = "#000"; g.lineWidth = 2; g.beginPath(); g.arc(...P(p), 8, 0, 7); g.fill(); g.stroke(); }
+}
+$("l-stage").onclick = (e) => {
+  const r = $("l-stage").getBoundingClientRect();
+  const p = [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)];
+  if (linePts.length >= 2) linePts = [];
+  linePts.push(p); drawLine();
+};
+$("l-reset").onclick = () => { linePts = []; drawLine(); };
+$("l-ok").onclick = async () => {
+  if (linePts.length !== 2) { $("l-err").textContent = "اضغط نقطتين على الصورة أولاً."; return; }
+  try { await post(`/api/cameras/${encodeURIComponent(lineCam)}/line`, {points: linePts, invert: $("l-inv").checked}); $("l-err").textContent = ""; toast("انحفظ الخط. شوف السهم بالصورة: هذا اتجاه الدخول"); }
+  catch (e) { $("l-err").textContent = e.message; }
+};
+window.addEventListener("resize", () => { if ($("dlg-line").open) drawLine(); });
+
+// ---------- statistics ----------
 async function loadStats() {
   const day = $("day").value || today;
   $("csv").href = `/api/export.csv?day=${day}`;
-  const [s, h, t, z, a, reps] = await Promise.all([
+  const [s, h, t, z, a] = await Promise.all([
     j(`/api/stats/summary?day=${day}`), j(`/api/stats/hourly?day=${day}`), j(`/api/stats/trend?days=7`),
-    j(`/api/stats/zones?day=${day}`), j(`/api/alerts?day=${day}`), j(`/api/reports`)]);
+    j(`/api/stats/zones?day=${day}`), j(`/api/alerts?day=${day}`)]);
   $("k-in").textContent = s.total_in; $("k-out").textContent = s.total_out; $("k-net").textContent = s.net_inside_estimate;
   $("k-peak").textContent = s.busiest_hour == null ? "-" : `${String(s.busiest_hour).padStart(2,"0")}:00`;
   $("k-first").textContent = `${s.first_entry || "-"} / ${s.last_entry || "-"}`;
   const hrs = h.filter(x => x.hour >= 6 && x.hour <= 23);
+  const opts = { responsive:true, plugins:{legend:{position:"bottom"}}, scales:{y:{beginAtZero:true, ticks:{precision:0}}} };
   chart("hourly", { type:"bar", data:{ labels: hrs.map(x => `${x.hour}:00`), datasets:[
-      {label:"دخول", data: hrs.map(x => x.in), backgroundColor:"#3fb6a8"},
-      {label:"خروج", data: hrs.map(x => x.out), backgroundColor:"#e8a33d"}]},
-    options:{ responsive:true, plugins:{legend:{position:"bottom"}}, scales:{y:{beginAtZero:true, ticks:{precision:0}}} } });
+      {label:"دخول", data: hrs.map(x => x.in), backgroundColor:"#2fc3b0", borderRadius:4},
+      {label:"خروج", data: hrs.map(x => x.out), backgroundColor:"#f0a840", borderRadius:4}]}, options: opts });
   chart("trend", { type:"line", data:{ labels: t.map(x => x.day.slice(5)), datasets:[
-      {label:"دخول", data: t.map(x => x.in), borderColor:"#3fb6a8", backgroundColor:"#3fb6a8", tension:.3},
-      {label:"خروج", data: t.map(x => x.out), borderColor:"#e8a33d", backgroundColor:"#e8a33d", tension:.3}]},
-    options:{ responsive:true, plugins:{legend:{position:"bottom"}}, scales:{y:{beginAtZero:true, ticks:{precision:0}}} } });
+      {label:"دخول", data: t.map(x => x.in), borderColor:"#2fc3b0", backgroundColor:"#2fc3b0", tension:.3},
+      {label:"خروج", data: t.map(x => x.out), borderColor:"#f0a840", backgroundColor:"#f0a840", tension:.3}]}, options: opts });
   const fmt = (s) => s >= 60 ? `${(s/60).toFixed(1)} د` : `${Math.round(s)} ث`;
   $("zones").innerHTML = z.length ? z.map(r => `<tr><td>${esc(r.zone_id)}</td><td>${r.visits}</td><td>${fmt(r.avg_dwell_s)}</td><td>${fmt(r.max_dwell_s)}</td></tr>`).join("")
     : `<tr><td colspan="4" class="muted">لا توجد بيانات مناطق لهذا اليوم.</td></tr>`;
-  $("alerts").innerHTML = a.length ? a.slice(0, 10).map(r => `<tr><td class="muted">${esc(r.time.slice(11))}</td><td class="alert">${esc(r.message)}</td></tr>`).join("")
-    : `<tr><td class="muted">لا توجد تنبيهات.</td></tr>`;
-  if (reps.length) $("reports").innerHTML = reps.slice(0, 5).map(r =>
-    `<details><summary>${esc(r.day)} · ${esc(r.time)}</summary><div class="answer">${esc(r.content)}</div></details>`).join("");
+  $("alerts").innerHTML = a.length ? a.slice(0, 12).map(r => `<tr><td class="muted" style="width:70px">${esc(r.time.slice(11))}</td><td>${esc(r.message)}</td></tr>`).join("")
+    : `<tr><td class="muted">لا توجد تنبيهات لهذا اليوم.</td></tr>`;
 }
+$("day").onchange = loadStats;
 
+// ---------- reports ----------
+function showAnswer(text) { lastReport = text; $("answer").hidden = false; $("answer").innerHTML = rich(text); $("print").disabled = false; }
+async function loadReports() {
+  const [reps, t] = await Promise.all([j("/api/reports"), j("/api/stats/trend?days=30")]);
+  if (reps.length) {
+    $("reports").className = "";
+    $("reports").innerHTML = reps.slice(0, 15).map((r, i) => `<details><summary>تقرير ${esc(r.day)} <span class="muted">· ${esc(r.time)}</span></summary><div class="answer">${rich(r.content)}</div><button class="btn ghost small" style="margin-top:8px" data-print="${i}">طباعة / PDF</button></details>`).join("");
+    document.querySelectorAll("[data-print]").forEach(b => b.onclick = () => printText(reps[+b.dataset.print].content));
+  }
+  const rows = [...t].reverse();
+  $("month").innerHTML = rows.some(r => r.in || r.out) ? rows.map(r => `<tr><td><span class="ltr">${esc(r.day)}</span></td><td>${r.in}</td><td>${r.out}</td><td style="text-align:end"><a class="btn ghost small" href="/api/export.csv?day=${esc(r.day)}">CSV</a></td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">لا توجد بيانات بعد. تبدأ تتجمع بعد إضافة كاميرا ورسم خط العد.</td></tr>`;
+}
+function printText(text) { $("print-area").innerHTML = `<h2>${esc($("site").textContent)}</h2>` + rich(text); window.print(); }
+$("print").onclick = () => printText(lastReport);
 async function ask(q) {
   if (!q) return;
   const btns = [$("ask"), $("report")]; btns.forEach(b => b.disabled = true);
   $("answer").hidden = false; $("answer").textContent = "جاري التحليل...";
-  try { $("answer").textContent = (await post("/api/agent/ask", {question:q})).answer; }
+  try { showAnswer((await post("/api/agent/ask", {question:q})).answer); }
   catch (e) { $("answer").textContent = "خطأ: " + e.message; }
   btns.forEach(b => b.disabled = false);
 }
-
 $("ask").onclick = () => ask($("q").value.trim());
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") ask($("q").value.trim()); });
 document.querySelectorAll("[data-q]").forEach(b => b.onclick = () => { $("q").value = b.dataset.q; ask(b.dataset.q); });
 $("report").onclick = async () => {
-  $("answer").hidden = false; $("answer").textContent = "جاري كتابة التقرير...";
-  $("report").disabled = true;
-  try { $("answer").textContent = (await post("/api/reports/daily", {day: $("day").value})).report; loadStats(); }
+  $("answer").hidden = false; $("answer").textContent = "جاري كتابة التقرير..."; $("report").disabled = true;
+  try { showAnswer((await post("/api/reports/daily", {day: $("rep-day").value})).report); loadReports(); }
   catch (e) { $("answer").textContent = "خطأ: " + e.message; }
   $("report").disabled = false;
 };
-$("discover").onclick = async () => {
-  $("discover").disabled = true; $("disc-state").textContent = "جاري البحث... (قد يستغرق 10-30 ثانية)"; $("disc").innerHTML = "";
-  try {
-    const r = await post("/api/discover", {subnet: $("subnet").value.trim()});
-    $("disc-state").textContent = `جهازك: ${r.local_ip} · الشبكة: ${r.subnet} · وُجدت ${r.cameras.length} كاميرا` + (r.errors.length ? ` · ${r.errors.join("، ")}` : "");
-    $("disc").innerHTML = r.cameras.map(c => `<tr><td dir="ltr">${esc(c.ip)}</td><td>${esc(c.method)}${c.rtsp_ports.length ? " ("+c.rtsp_ports.join(",")+")" : ""}</td>
-      <td>${esc(c.name || c.server || "-")}<div class="muted">${esc(c.model || "")}</div></td>
-      <td>${Object.entries(c.rtsp_url_examples).map(([k,v]) => `<div><span class="muted">${esc(k)}:</span> <code>${esc(v)}</code></div>`).join("")}</td></tr>`).join("");
-  } catch (e) { $("disc-state").textContent = "خطأ: " + e.message; }
-  $("discover").disabled = false;
-};
-$("day").onchange = loadStats;
 
+// ---------- settings ----------
+const DAYS = [[5,"السبت"],[6,"الأحد"],[0,"الاثنين"],[1,"الثلاثاء"],[2,"الأربعاء"],[3,"الخميس"],[4,"الجمعة"]];   // Python weekday numbers
+$("s-days").innerHTML = DAYS.map(([n, name]) => `<label><input type="checkbox" value="${n}">${name}</label>`).join("");
+async function loadSettings() {
+  const s = await j("/api/settings");
+  $("s-site").value = s.site_name; $("s-start").value = s.working_hours.start; $("s-end").value = s.working_hours.end;
+  document.querySelectorAll("#s-days input").forEach(i => i.checked = s.working_hours.days.includes(+i.value));
+  $("s-after").checked = s.alerts.after_hours_presence; $("s-max").value = s.alerts.max_occupancy; $("s-cool").value = s.alerts.cooldown_minutes;
+  $("s-key").value = ""; $("s-key-state").textContent = s.agent.has_api_key ? "مفتاح محفوظ. اكتب مفتاح جديد لتغييره" : "بدونه يطلع تقرير أساسي فقط";
+  $("s-rep").value = s.agent.daily_report_time;
+  $("s-blur").checked = s.privacy.blur_people; $("s-notice").checked = s.privacy.show_notice; $("s-ret").value = s.privacy.retention_days;
+  $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence;
+  $("s-pass").value = ""; $("s-pass-state").textContent = s.server.has_password ? "مفعّلة. اكتب كلمة جديدة لتغييرها" : "اختياري: يطلبها البرنامج عند الفتح";
+  $("s-auto").checked = s.updates.auto_install; $("set-state").textContent = "";
+}
+$("save").onclick = async () => {
+  const body = {
+    site_name: $("s-site").value,
+    working_hours: {start: $("s-start").value, end: $("s-end").value, days: [...document.querySelectorAll("#s-days input:checked")].map(i => +i.value)},
+    alerts: {after_hours_presence: $("s-after").checked, max_occupancy: $("s-max").value, cooldown_minutes: $("s-cool").value},
+    agent: {daily_report_time: $("s-rep").value},
+    privacy: {blur_people: $("s-blur").checked, show_notice: $("s-notice").checked, retention_days: $("s-ret").value},
+    detector: {process_fps: $("s-fps").value, confidence: $("s-conf").value},
+    server: {}, updates: {auto_install: $("s-auto").checked},
+  };
+  if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
+  if ($("s-pass").value) body.server.password = $("s-pass").value;
+  $("save").disabled = true;
+  try { await post("/api/settings", body); toast("انحفظت الإعدادات"); await loadInfo(); await loadSettings(); }
+  catch (e) { $("set-state").textContent = e.message; toast("ما انحفظت: " + e.message); }
+  $("save").disabled = false;
+};
+$("upd-check").onclick = async () => {
+  $("upd-check").disabled = true; $("s-upd").textContent = "جاري التحقق...";
+  try { const u = await post("/api/update/check"); $("s-upd").textContent = u.available ? `نسخة جديدة متوفرة: ${u.latest}` : (u.error ? `تعذر التحقق: ${u.error}` : "عندك أحدث نسخة"); loadUpdate(); }
+  catch (e) { $("s-upd").textContent = "تعذر التحقق: " + e.message; }
+  $("upd-check").disabled = false;
+};
+
+// ---------- online update ----------
 async function loadUpdate() {
   const u = await j("/api/update"); const box = $("update");
   if (u.installing) { box.hidden = false; box.textContent = "جاري تثبيت التحديث... البرنامج راح يرجع يشتغل خلال دقيقة."; return; }
   if (!u.available) { box.hidden = true; return; }
+  if ($("upd-btn")) return;
   box.hidden = false;
-  box.innerHTML = `<span>نسخة جديدة متوفرة: <b dir="ltr">${esc(u.latest)}</b> (عندك <span dir="ltr">${esc(u.current)}</span>). تنزل وتتنصب تلقائياً خارج الدوام، أو ثبتها هسه.</span><button id="upd-btn">تحديث الآن</button>`;
+  box.innerHTML = `<span>نسخة جديدة متوفرة: <b class="ltr">${esc(u.latest)}</b> (عندك <span class="ltr">${esc(u.current)}</span>).</span><button class="btn small" id="upd-btn">تحديث الآن</button>`;
   $("upd-btn").onclick = async () => {
     $("upd-btn").disabled = true; box.firstChild.textContent = "جاري تنزيل وتثبيت التحديث... ";
     try { await post("/api/update/install"); } catch (e) { box.firstChild.textContent = "فشل التحديث: " + e.message; return; }
@@ -231,9 +535,9 @@ async function loadUpdate() {
 
 (async () => {
   await loadInfo(); await Promise.all([loadCams(), loadStats()]);
-  setInterval(loadCams, 2000);
-  loadUpdate(); setInterval(loadUpdate, 60000);
-  setInterval(() => { if (($("day").value || today) === today) loadStats(); }, 15000);
+  setInterval(() => loadCams().catch(() => {}), 2000);
+  setInterval(() => { if (view === "home") loadStats().catch(() => {}); }, 15000);
+  loadUpdate().catch(() => {}); setInterval(() => loadUpdate().catch(() => {}), 60000);
 })();
 </script>
 </body>
