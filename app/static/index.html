@@ -533,6 +533,9 @@ async function loadUpdate() {
   };
 }
 
+// tells the desktop launcher that this window is going away (it stops the program when no window is left)
+window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/window/closed"); } catch (_) {} });
+
 (async () => {
   await loadInfo(); await Promise.all([loadCams(), loadStats()]);
   setInterval(() => loadCams().catch(() => {}), 2000);

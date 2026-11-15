@@ -46,16 +46,25 @@ def _find_app_browser() -> str | None:
     return shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
 
 
-def _open_app_window(url: str) -> subprocess.Popen | None:
-    """Open the dashboard in its own window. Returns the window process (ends when the window is closed)."""
+def _open_app_window(url: str) -> None:
+    """Open the dashboard in its own window (Edge/Chrome app mode), or in the default browser."""
     exe = _find_app_browser()
     if not exe:
         webbrowser.open(url)
-        return None
-    profile = ROOT / "data" / "window"   # own profile: the process then lives exactly as long as the window
+        return
+    profile = ROOT / "data" / "window"   # own profile: no tabs, extensions or sign-in prompts of the user's browser
     profile.mkdir(parents=True, exist_ok=True)
-    return subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run",
-                             "--no-default-browser-check", "--window-size=1400,900"])
+    subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run",
+                      "--no-default-browser-check", "--window-size=1400,900"])
+
+
+def _window_state(url: str) -> dict | None:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url + "/api/window/state", timeout=3) as r:
+            return json.load(r)
+    except Exception:  # noqa: BLE001 - server busy or restarting
+        return None
 
 
 def _message_box(text: str) -> None:
@@ -100,18 +109,34 @@ def run_windowed(config: str, port: int, url: str) -> int:
             _message_box(f"CCTV Analytics could not start.\nDetails: {log_path}")
             return 1
         time.sleep(0.3)
-    window = _open_app_window(url)
+    _open_app_window(url)
+    # The program stops when its window is closed. The window's process cannot be trusted for that
+    # (the browser may hand the window to another process and exit at once), so the page itself is
+    # watched: it says goodbye when it closes, and it asks for data every few seconds while open.
+    idle_limit = float(os.environ.get("CCTV_WINDOW_IDLE_S", "180"))   # covers a window killed without goodbye
+    url_local = f"http://127.0.0.1:{port}"
+    grace_until = time.time() + 30
+    last_tick = time.time()
     try:
         while True:
-            if window is not None and window.poll() is not None:
-                return 0                      # window closed by the user
+            time.sleep(1)
+            now = time.time()
+            if now - last_tick > 15:          # the PC was asleep: let the page reconnect first
+                grace_until = now + 90
+            last_tick = now
             rc = server.poll()
             if rc == RESTART_EXIT_CODE:
                 server = start_server()
-            elif rc is not None:
+                grace_until = now + 90
+                continue
+            if rc is not None:
                 _message_box(f"CCTV Analytics stopped unexpectedly.\nDetails: {log_path}")
                 return 1
-            time.sleep(0.5)
+            st = _window_state(url_local)
+            if st is None or now < grace_until:
+                continue
+            if (st["closed"] is not None and st["closed"] > 4) or st["idle"] > idle_limit:
+                return 0                      # window closed by the user
     finally:
         if server.poll() is None:
             server.kill()

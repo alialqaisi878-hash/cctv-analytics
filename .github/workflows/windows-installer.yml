@@ -87,6 +87,8 @@ jobs:
 
       - name: Start the app and check it analyses the sample video
         shell: pwsh
+        env:
+          CCTV_WINDOW_IDLE_S: "25"
         run: |
           $dir = $env:CCTV_DIR
           # a fresh install has no cameras: check that, then use the sample-video configuration for the smoke test
@@ -121,11 +123,20 @@ jobs:
           $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
           Write-Host "app window processes: $(@($win).Count) $(@($win).Name -join ',')"
           if (-not $win) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "app window was not opened"; exit 1 }
-          $win | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          # 1) the program must NOT stop while its window is open, even though nothing else is going on
+          Start-Sleep 12
+          if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "program stopped while its window was open"; exit 1 }
+          Invoke-RestMethod http://127.0.0.1:8000/api/window/state | ConvertTo-Json -Compress
+          # 2) closing the window must stop it (asked to close politely; a killed window is covered by the idle limit)
+          $polite = $false
+          $win | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p -and $p.CloseMainWindow()) { $polite = $true } }
+          Write-Host "window closed politely: $polite"
+          Start-Sleep 3
+          Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           $stopped = $false
-          for ($i = 0; $i -lt 30; $i++) {
+          for ($i = 0; $i -lt 60; $i++) {
             Start-Sleep 1
-            if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; break }
+            if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; Write-Host "program stopped after $($i + 4)s"; break }
           }
           Get-Content "$dir\data\app.log" -Tail 15
           if (-not $stopped) { Write-Error "program kept running after its window was closed"; exit 1 }
