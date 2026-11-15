@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import io
+import ipaddress
 import logging
 import secrets
 import threading
@@ -16,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from . import discovery
 from .agent import Analyst
-from .config import in_working_hours
+from .analytics import LineCounter
+from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
+                     public_settings, remove_local_camera, set_camera_lines)
 from .db import Database
 from .pipeline import CameraWorker
 from .updater import Updater
@@ -72,21 +76,21 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     api.state.core = core
     api.mount("/static", StaticFiles(directory=STATIC), name="static")
 
-    password = cfg["server"].get("password") or ""
-    if password:
-        @api.middleware("http")
-        async def basic_auth(request: Request, call_next):
+    @api.middleware("http")
+    async def basic_auth(request: Request, call_next):
+        password = cfg["server"].get("password") or ""   # read every time: it can be changed in the settings
+        if password:
             auth = request.headers.get("authorization", "")
             ok = False
             if auth.startswith("Basic "):
                 try:
                     _, _, pw = base64.b64decode(auth[6:]).decode().partition(":")
-                    ok = secrets.compare_digest(pw, password)
+                    ok = secrets.compare_digest(pw.encode(), password.encode())
                 except Exception:  # noqa: BLE001
                     ok = False
             if not ok:
                 return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="CCTV"'})
-            return await call_next(request)
+        return await call_next(request)
 
     def day_or_today(day: str | None) -> str:
         return day or db.today()
@@ -103,13 +107,75 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
                 "privacy": {"show_notice": p["show_notice"], "notice_text": p["notice_text"],
                             "retention_days": p["retention_days"], "blur_people": p["blur_people"]}}
 
+    cam_lock = threading.Lock()
+
     @api.get("/api/cameras")
     def cameras():
+        removable = local_camera_ids(cfg["_cameras_file"]) if cfg.get("_cameras_file") else set()
         out = []
-        for cam in cfg["cameras"]:
+        for cam in list(cfg["cameras"]):
             w = core.workers.get(cam["id"])
-            out.append(w.snapshot() if w else {"id": cam["id"], "name": cam["name"], "status": "disabled"})
+            snap = w.snapshot() if w else {"id": cam["id"], "name": cam["name"], "status": "disabled"}
+            snap["removable"] = cam["id"] in removable
+            out.append(snap)
         return out
+
+    @api.post("/api/cameras/add")
+    def add_camera(payload: dict = Body(...)):
+        """Add a network camera: finds its video address with the given login, saves it and starts it."""
+        try:
+            ip = ipaddress.ip_address(str(payload.get("ip", "")).strip())
+            port = int(payload.get("port") or 554)
+            channel = int(payload.get("channel") or 1)
+        except ValueError:
+            raise HTTPException(400, "عنوان الكاميرا (IP) أو المنفذ غير صحيح.")
+        if not (ip.is_private or ip.is_loopback) or not (1 <= port <= 65535) or not (1 <= channel <= 64):
+            raise HTTPException(400, "يمكن إضافة كاميرات الشبكة المحلية فقط.")
+        user = str(payload.get("username") or "").strip()
+        pw = str(payload.get("password") or "")
+        cam_id = "cam_" + str(ip).replace(".", "_").replace(":", "_") + (f"_ch{channel}" if channel > 1 else "")
+        with cam_lock:
+            if any(c["id"] == cam_id for c in cfg["cameras"]):
+                raise HTTPException(409, "هذه الكاميرا مضافة من قبل.")
+            found = discovery.find_stream(str(ip), port, user, pw, channel)
+            if found["status"] == "auth":
+                raise HTTPException(401, "اسم المستخدم أو كلمة المرور غير صحيحة.")
+            if found["status"] == "unreachable":
+                raise HTTPException(502, "الكاميرا لا تستجيب. تأكد أنها تعمل وعلى نفس الشبكة.")
+            if found["status"] != "ok":
+                raise HTTPException(404, "تم الدخول للكاميرا لكن لم يُعثر على عنوان البث. جرّب رقم قناة آخر.")
+            name = (str(payload.get("name") or "").strip() or f"كاميرا {ip}")[:60]
+            cam = {"id": cam_id, "name": name, "source": found["url"],
+                   "lines": [{"id": "door1", "name": "خط العد", "points": [[0.05, 0.55], [0.95, 0.55]]}],
+                   "zones": []}
+            add_local_camera(cfg["_cameras_file"], copy.deepcopy(cam))
+            normalize_camera(cam)
+            cfg["cameras"].append(cam)
+            w = CameraWorker(cam, cfg, db)
+            core.workers[cam_id] = w
+            w.start()
+        log.info("camera %s added (%s)", cam_id, found["vendor"])
+        return {"id": cam_id, "name": name, "vendor": found["vendor"]}
+
+    @api.delete("/api/cameras/{cam_id}")
+    def delete_camera(cam_id: str):
+        with cam_lock:
+            if not remove_local_camera(cfg["_cameras_file"], cam_id):
+                raise HTTPException(404, "هذه الكاميرا غير مضافة من اللوحة (احذفها من config.yaml).")
+            w = core.workers.pop(cam_id, None)
+            if w:
+                w.stop()
+            cfg["cameras"][:] = [c for c in cfg["cameras"] if c["id"] != cam_id]
+        return {"ok": True}
+
+    @api.get("/frame/{cam_id}")
+    def frame(cam_id: str):
+        """Latest analysed picture of a camera (the dashboard refreshes it a few times per second)."""
+        w = core.workers.get(cam_id)
+        jpg = w.latest_jpeg() if w else None
+        if jpg is None:
+            raise HTTPException(404, "no picture yet")
+        return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @api.get("/stream/{cam_id}")
     def stream(cam_id: str):
@@ -157,6 +223,50 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         wr.writerows(rows)
         return PlainTextResponse("﻿" + buf.getvalue(), media_type="text/csv",
                                  headers={"Content-Disposition": f"attachment; filename=crossings-{day_or_today(day)}.csv"})
+
+    @api.post("/api/cameras/{cam_id}/line")
+    def set_line(cam_id: str, payload: dict = Body(...)):
+        """Move the counting line of a camera (two points as fractions of the picture)."""
+        try:
+            pts = [[min(max(float(x), 0.0), 1.0), min(max(float(y), 0.0), 1.0)] for x, y in payload["points"]]
+            if len(pts) != 2 or pts[0] == pts[1]:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "حدّد نقطتين مختلفتين على الصورة.")
+        with cam_lock:
+            cam = next((c for c in cfg["cameras"] if c["id"] == cam_id), None)
+            if cam is None:
+                raise HTTPException(404, "unknown camera")
+            old = cam["lines"][0] if cam["lines"] else {}
+            line = {"id": old.get("id", "door1"), "name": str(payload.get("name") or old.get("name") or "خط العد")[:60],
+                    "points": pts, "invert": bool(payload.get("invert", False))}
+            lines = [line] + cam["lines"][1:]
+            set_camera_lines(cfg["_cameras_file"], cam_id, copy.deepcopy(lines))   # no-op for config.yaml cameras
+            w = core.workers.get(cam_id)
+            if w:
+                w.lines = [LineCounter(l["id"], tuple(l["points"][0]), tuple(l["points"][1]), l.get("invert", False))
+                           for l in lines]
+            cam["lines"] = lines
+        return {"ok": True, "line": line}
+
+    @api.get("/api/cameras/{cam_id}/setup")
+    def camera_setup(cam_id: str):
+        cam = next((c for c in cfg["cameras"] if c["id"] == cam_id), None)
+        if cam is None:
+            raise HTTPException(404, "unknown camera")
+        return {"id": cam_id, "name": cam["name"], "lines": cam["lines"]}
+
+    @api.get("/api/settings")
+    def get_settings():
+        return public_settings(cfg)
+
+    @api.post("/api/settings")
+    def post_settings(payload: dict = Body(...)):
+        try:
+            apply_settings(cfg, payload)
+        except ValueError as e:
+            raise HTTPException(400, f"قيمة غير صحيحة: {e}")
+        return public_settings(cfg)
 
     @api.post("/api/discover")
     def discover(payload: dict = Body(default={})):

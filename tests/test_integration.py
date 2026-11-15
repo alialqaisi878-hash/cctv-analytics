@@ -35,7 +35,7 @@ class FakeModel:
 
 @pytest.fixture
 def cfg(tmp_path):
-    c = load_config("config.example.yaml")
+    c = load_config("tests/demo-config.yaml")
     c["database"] = str(tmp_path / "t.db")
     return c
 
