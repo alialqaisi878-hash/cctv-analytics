@@ -1,6 +1,7 @@
 @echo off
 rem Starts CCTV Analytics and opens the dashboard in the browser.
-rem   launch.bat              normal start (window shows the log; close it to stop)
+rem   launch.bat              normal start: the program opens in its own window (close it to stop)
+rem   launch.bat --console    start with a console window that shows the log, dashboard in the browser
 rem   launch.bat --background start minimised without opening the browser (used for auto-start)
 cd /d "%~dp0"
 title CCTV Analytics
@@ -15,6 +16,11 @@ if not exist ".venv\Scripts\python.exe" (
 
 if /i "%~1"=="--background" (
   start "CCTV Analytics" /min cmd /c ""%~f0" --serve"
+  exit /b 0
+)
+
+if "%~1"=="" if exist ".venv\Scripts\pythonw.exe" (
+  start "" ".venv\Scripts\pythonw.exe" run.py --app-window
   exit /b 0
 )
 

@@ -85,9 +85,8 @@ jobs:
         shell: pwsh
         run: |
           $dir = $env:CCTV_DIR
-          # started the way the desktop shortcut starts it (launch.bat), minus opening a browser
-          $proc = Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat", "--serve" -WorkingDirectory $dir `
-                    -RedirectStandardOutput app-out.log -RedirectStandardError app-err.log -PassThru
+          # started exactly the way the desktop shortcut starts it: launch.bat opens the app window
+          Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir -Wait
           $ok = $false
           for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep 5
@@ -101,9 +100,18 @@ jobs:
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode
-          taskkill /PID $proc.Id /T /F | Out-Null
-          Get-Content app-out.log -Tail 10
-          Get-Content app-err.log -Tail 30
+          # the app window must exist, and closing it must stop the program
+          $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
+          Write-Host "app window processes: $(@($win).Count) $(@($win).Name -join ',')"
+          if (-not $win) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "app window was not opened"; exit 1 }
+          $win | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          $stopped = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep 1
+            if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; break }
+          }
+          Get-Content "$dir\data\app.log" -Tail 15
+          if (-not $stopped) { Write-Error "program kept running after its window was closed"; exit 1 }
           if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
 
       - name: Run tests on Windows
