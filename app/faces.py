@@ -81,8 +81,11 @@ class FaceEngine:
             self.model_dir.mkdir(parents=True, exist_ok=True)
             paths = {k: self._fetch(k) for k in MODELS}
             with self._lock:
-                self._det = cv2.FaceDetectorYN.create(str(paths["yunet"]), "", (320, 320), 0.75, 0.3, 500)
-                self._rec = cv2.FaceRecognizerSF.create(str(paths["sface"]), "")
+                # loaded from memory: OpenCV cannot open files in folders with Arabic names on Windows
+                empty = np.array([], np.uint8)
+                self._det = cv2.FaceDetectorYN.create("onnx", np.fromfile(paths["yunet"], np.uint8), empty,
+                                                      (320, 320), 0.75, 0.3, 500)
+                self._rec = cv2.FaceRecognizerSF.create("onnx", np.fromfile(paths["sface"], np.uint8), empty)
                 self._det_size = None
             self.status = "ready"
             log.info("face recognition ready (%d people)", len(self.people))
@@ -229,7 +232,9 @@ class FaceEngine:
         if crop.size:
             crop = cv2.resize(crop, (160, int(160 * crop.shape[0] / crop.shape[1])))
             self.people_dir.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(self.people_dir / f"{pid}.jpg"), crop)
+            ok, buf = cv2.imencode(".jpg", crop)    # (cv2.imwrite fails in non-English folders on Windows)
+            if ok:
+                (self.people_dir / f"{pid}.jpg").write_bytes(buf.tobytes())
 
     def thumb(self, pid: str) -> Path | None:
         p = self.people_dir / f"{pid}.jpg"

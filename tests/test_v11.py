@@ -61,8 +61,9 @@ def engine_models(tmp_path_factory):
 
 def _engine(tmp_path, models):
     from app.faces import FaceEngine
-    shutil.copytree(models, tmp_path / "data" / "models", dirs_exist_ok=True)
-    e = FaceEngine(tmp_path / "data")
+    # Arabic folder name on purpose: the program is installed in folders like that
+    shutil.copytree(models, tmp_path / "برامج" / "models", dirs_exist_ok=True)
+    e = FaceEngine(tmp_path / "برامج")
     e.ensure_ready(background=False)
     assert e.ready
     return e
@@ -149,7 +150,7 @@ def test_enroll_and_recognise(tmp_path, engine_models):
     assert e.public_people()[0]["photos"] == 2
     # saved to disk and loaded again
     from app.faces import FaceEngine
-    e2 = FaceEngine(tmp_path / "data")
+    e2 = FaceEngine(tmp_path / "برامج")
     assert e2.public_people()[0]["name"] == "لينا"
     assert e.remove(p["id"]) and not e.people
 
