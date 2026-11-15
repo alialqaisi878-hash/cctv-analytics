@@ -8,7 +8,10 @@ param(
     [string]$AppDir = (Split-Path -Parent $PSScriptRoot)
 )
 
-$ErrorActionPreference = "Stop"
+# "Continue", not "Stop": Windows PowerShell 5.1 turns any stderr output of a native program
+# (python, pip) into a terminating error under "Stop". Native steps are checked via $LASTEXITCODE,
+# and cmdlets that must succeed pass -ErrorAction Stop explicitly.
+$ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"   # makes Invoke-WebRequest much faster
 $AppDir = (Resolve-Path $AppDir).Path
 $Log = Join-Path $AppDir "install.log"
@@ -64,9 +67,9 @@ try {
         Step "Python not found - downloading Python 3.12"
         $pyUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
         $pyInstaller = Join-Path $env:TEMP "python-3.12-installer.exe"
-        Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
+        Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing -ErrorAction Stop
         Step "Installing Python 3.12 (for this user only)"
-        $p = Start-Process -FilePath $pyInstaller -Wait -PassThru -ArgumentList `
+        $p = Start-Process -FilePath $pyInstaller -Wait -PassThru -ErrorAction Stop -ArgumentList `
             "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1", "Include_test=0", "Include_doc=0"
         if ($p.ExitCode -ne 0) { Fail "Python installer exited with code $($p.ExitCode)" }
         Remove-Item $pyInstaller -ErrorAction SilentlyContinue
@@ -91,7 +94,7 @@ try {
     try { $null = Get-Command nvidia-smi -ErrorAction Stop; & nvidia-smi -L *> $null; $hasNvidia = ($LASTEXITCODE -eq 0) } catch {}
     if ($env:CCTV_FORCE_CPU) { $hasNvidia = $false }
 
-    & $vpy -c "import torch" 2>$null
+    & $vpy -c "import torch" 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         if ($hasNvidia) {
             Step "NVIDIA graphics card found - installing PyTorch with GPU support (large download)"
@@ -111,7 +114,7 @@ try {
 
     $cfg = Join-Path $AppDir "config.yaml"
     if (-not (Test-Path $cfg)) {
-        Copy-Item (Join-Path $AppDir "config.example.yaml") $cfg
+        Copy-Item (Join-Path $AppDir "config.example.yaml") $cfg -ErrorAction Stop
         Write-Host "Created config.yaml"
     }
 
