@@ -60,4 +60,5 @@ Filename: "{app}\launch.bat"; Description: "Start {#AppName} now"; WorkingDir: "
 Type: filesandordirs; Name: "{app}\.venv"
 Type: filesandordirs; Name: "{app}\app"
 Type: files; Name: "{app}\install.log"
+Type: files; Name: "{app}\setup.lock"
 ; config.yaml and data\ (your statistics) are kept on uninstall; delete the folder manually to remove them.

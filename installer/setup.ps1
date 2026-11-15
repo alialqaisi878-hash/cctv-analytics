@@ -15,8 +15,17 @@ $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"   # makes Invoke-WebRequest much faster
 $AppDir = (Resolve-Path $AppDir).Path
 $Log = Join-Path $AppDir "install.log"
-Start-Transcript -Path $Log -Force | Out-Null
 $Host.UI.RawUI.WindowTitle = "CCTV Analytics - Setup"
+
+# Only one setup at a time (the installer and the desktop shortcut can both start it).
+try {
+    $script:LockHandle = [System.IO.File]::Open((Join-Path $AppDir "setup.lock"), "OpenOrCreate", "ReadWrite", "None")
+} catch {
+    Write-Host "Setup is already running in another window. Please wait for it to finish." -ForegroundColor Yellow
+    if (-not $env:CI) { Read-Host "Press Enter to close" | Out-Null }
+    exit 0
+}
+try { Start-Transcript -Path $Log -Force -ErrorAction Stop | Out-Null } catch { }
 
 function Step($msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
 
@@ -25,34 +34,40 @@ function Fail($msg) {
     Write-Host "SETUP FAILED: $msg" -ForegroundColor Red
     Write-Host "Log file: $Log"
     Write-Host "Check your internet connection and run 'Repair CCTV Analytics' from the Start menu."
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null } catch { }
     if (-not $env:CI) { Read-Host "Press Enter to close" | Out-Null }
     exit 1
 }
 
-function Test-PythonCmd([string[]]$cmd) {
+function Get-PythonExe([string[]]$cmd) {
+    # Returns the full path of a usable Python 3.10-3.13, or $null.
+    # Usable = a normal installation with venv + ensurepip, not another app's private copy in AppData\Roaming.
     try {
         $exe = $cmd[0]
         $rest = @()
         if ($cmd.Length -gt 1) { $rest = $cmd[1..($cmd.Length - 1)] }
-        $out = & $exe @rest -c "import sys; print(sys.version_info[:2] >= (3,10) and sys.version_info[:2] <= (3,13))" 2>$null
-        return ($LASTEXITCODE -eq 0 -and "$out".Trim() -eq "True")
-    } catch { return $false }
+        $probe = "import sys, venv, ensurepip; v=sys.version_info[:2]; print(sys.executable if (3,10) <= v <= (3,13) else '')"
+        $out = & $exe @rest -c $probe 2>$null
+        if ($LASTEXITCODE -ne 0) { return $null }
+        $path = "$out".Trim()
+        if (-not $path) { return $null }
+        if ($path.StartsWith($env:APPDATA, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+        return $path
+    } catch { return $null }
 }
 
 function Find-Python {
     $candidates = @(
         @("py", "-3.12"), @("py", "-3.11"), @("py", "-3.13"), @("py", "-3.10"),
         @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"),
+        @("$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"),
+        @("$env:ProgramFiles\Python312\python.exe"),
+        @("$env:ProgramFiles\Python311\python.exe"),
         @("python")
     )
     foreach ($c in $candidates) {
-        if (Test-PythonCmd $c) {
-            $exe = $c[0]
-            $rest = @()
-            if ($c.Length -gt 1) { $rest = $c[1..($c.Length - 1)] }
-            return (& $exe @rest -c "import sys; print(sys.executable)").Trim()
-        }
+        $p = Get-PythonExe $c
+        if ($p) { return $p }
     }
     return $null
 }
@@ -80,6 +95,15 @@ try {
 
     $venv = Join-Path $AppDir ".venv"
     $vpy = Join-Path $venv "Scripts\python.exe"
+    # rebuild an environment that was made from another app's private Python (older versions allowed that)
+    $cfgFile = Join-Path $venv "pyvenv.cfg"
+    if (Test-Path $cfgFile) {
+        $venvHome = ((Get-Content $cfgFile | Where-Object { $_ -like "home*" }) -split "=", 2)[1]
+        if ($venvHome -and $venvHome.Trim().StartsWith($env:APPDATA, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Step "Rebuilding the Python environment with a standard Python"
+            Remove-Item -Recurse -Force $venv
+        }
+    }
     if (-not (Test-Path $vpy)) {
         Step "Creating private Python environment"
         & $py -m venv $venv
@@ -87,7 +111,7 @@ try {
     }
 
     Step "Updating pip"
-    & $vpy -m pip install --upgrade pip --disable-pip-version-check -q
+    & $vpy -m pip install --upgrade pip --disable-pip-version-check --timeout 60 --retries 5 -q
     if ($LASTEXITCODE -ne 0) { Fail "pip upgrade failed" }
 
     $hasNvidia = $false
@@ -98,18 +122,18 @@ try {
     if ($LASTEXITCODE -ne 0) {
         if ($hasNvidia) {
             Step "NVIDIA graphics card found - installing PyTorch with GPU support (large download)"
-            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 --disable-pip-version-check
+            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 --disable-pip-version-check --timeout 60 --retries 5
             if ($LASTEXITCODE -ne 0) { Write-Host "GPU build failed, falling back to CPU build" -ForegroundColor Yellow; $hasNvidia = $false }
         }
         if (-not $hasNvidia) {
             Step "Installing PyTorch (CPU version)"
-            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --disable-pip-version-check
+            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --disable-pip-version-check --timeout 60 --retries 5
             if ($LASTEXITCODE -ne 0) { Fail "PyTorch installation failed" }
         }
     }
 
     Step "Installing program libraries"
-    & $vpy -m pip install -r (Join-Path $AppDir "requirements.txt") --disable-pip-version-check
+    & $vpy -m pip install -r (Join-Path $AppDir "requirements.txt") --disable-pip-version-check --timeout 60 --retries 5
     if ($LASTEXITCODE -ne 0) { Fail "installing requirements failed" }
 
     $cfg = Join-Path $AppDir "config.yaml"
@@ -127,7 +151,7 @@ try {
 
     Write-Host ""
     Write-Host "Setup complete. Start 'CCTV Analytics' from the desktop or Start menu." -ForegroundColor Green
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null } catch { }
     exit 0
 } catch {
     Fail $_.Exception.Message
