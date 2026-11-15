@@ -70,6 +70,9 @@ jobs:
           # a non-English folder on purpose: that is how real users install it
           $dir = "$env:RUNNER_TEMP\برامج\CCTVAnalytics"
           "CCTV_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # leftovers of a failed older setup (as on a PC where v1.0.2 stopped half way) must not break this one
+          New-Item -ItemType Directory -Force "$dir\python\cpython-3.12.9-windows-x86_64-none" | Out-Null
+          Set-Content "$dir\python\cpython-3.12.9-windows-x86_64-none\leftover.txt" "x"
           $p = Start-Process dist\CCTV-Analytics-Setup.exe -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install-wizard.log", "/DIR=`"$dir`""
           Write-Host "Setup exit code: $($p.ExitCode)"
           if (Test-Path "$dir\install.log") { Get-Content "$dir\install.log" -Tail 40 }
@@ -82,8 +85,8 @@ jobs:
         shell: pwsh
         run: |
           $dir = $env:CCTV_DIR
-          $env:PYTHONUTF8 = "1"
-          $proc = Start-Process "$dir\.venv\Scripts\python.exe" -ArgumentList "run.py" -WorkingDirectory $dir `
+          # started the way the desktop shortcut starts it (launch.bat), minus opening a browser
+          $proc = Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat", "--serve" -WorkingDirectory $dir `
                     -RedirectStandardOutput app-out.log -RedirectStandardError app-err.log -PassThru
           $ok = $false
           for ($i = 0; $i -lt 40; $i++) {
@@ -98,7 +101,8 @@ jobs:
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode
-          Stop-Process -Id $proc.Id -Force
+          taskkill /PID $proc.Id /T /F | Out-Null
+          Get-Content app-out.log -Tail 10
           Get-Content app-err.log -Tail 30
           if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
 
