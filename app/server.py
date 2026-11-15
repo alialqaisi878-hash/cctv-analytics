@@ -16,8 +16,11 @@ from fastapi.staticfiles import StaticFiles
 
 from . import discovery
 from .agent import Analyst
+from .config import in_working_hours
 from .db import Database
 from .pipeline import CameraWorker
+from .updater import Updater
+from .version import __version__
 
 log = logging.getLogger("cctv.server")
 STATIC = Path(__file__).parent / "static"
@@ -36,6 +39,8 @@ class App:
                     self.workers[cam["id"]] = w
                     w.start()
         threading.Thread(target=self._housekeeping, daemon=True, name="housekeeping").start()
+        self.updater = Updater(cfg)
+        self.updater.run_background(lambda: in_working_hours(cfg, self.db.local(time.time())))
 
     def _housekeeping(self):
         """Retention cleanup every hour + scheduled daily report."""
@@ -94,6 +99,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     def info():
         p = cfg["privacy"]
         return {"site_name": cfg["site_name"], "today": db.today(), "ai_enabled": core.analyst.ai_enabled,
+                "version": __version__,
                 "privacy": {"show_notice": p["show_notice"], "notice_text": p["notice_text"],
                             "retention_days": p["retention_days"], "blur_people": p["blur_people"]}}
 
@@ -169,6 +175,21 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     @api.post("/api/reports/daily")
     def make_report(payload: dict = Body(default={})):
         return {"report": core.analyst.daily_report(payload.get("day") or None)}
+
+    @api.get("/api/update")
+    def update_status():
+        return core.updater.state
+
+    @api.post("/api/update/check")
+    def update_check():
+        return core.updater.check()
+
+    @api.post("/api/update/install")
+    def update_install():
+        if not core.updater.state["available"]:
+            raise HTTPException(400, "no update available")
+        threading.Thread(target=core.updater.install, daemon=True).start()
+        return {"ok": True}
 
     @api.get("/api/reports")
     def reports():

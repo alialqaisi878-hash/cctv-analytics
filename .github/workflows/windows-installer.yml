@@ -1,0 +1,121 @@
+name: Windows installer
+
+# Builds CCTV-Analytics-Setup.exe and the online-update package, installs it on a clean
+# Windows machine, and checks that the app starts and analyses the sample video.
+# Push a tag like v1.1.0 to publish a release: installed copies then update themselves.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $v = $env:GITHUB_REF_NAME.TrimStart("v")
+            Set-Content app/version.py "__version__ = `"$v`"" -Encoding utf8
+          }
+          $v = (Select-String -Path app/version.py -Pattern '"(.+)"').Matches[0].Groups[1].Value
+          "APP_VERSION=$v" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Version $v"
+
+      - name: Download sample video and YOLO model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force samples, models, dist | Out-Null
+          Invoke-WebRequest https://github.com/intel-iot-devkit/sample-videos/raw/master/people-detection.mp4 -OutFile samples/people.mp4
+          Invoke-WebRequest https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt -OutFile models/yolo11n.pt
+
+      - name: Build update package
+        shell: pwsh
+        run: |
+          $stage = "build/update"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item -Recurse app "$stage/app"
+          Get-ChildItem -Recurse "$stage/app" -Include __pycache__ -Directory | Remove-Item -Recurse -Force
+          New-Item -ItemType Directory -Force "$stage/installer" | Out-Null
+          Copy-Item installer/setup.ps1 "$stage/installer/"
+          Copy-Item run.py, requirements.txt, config.example.yaml, README.md $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath dist/cctv-analytics-update.zip -Force
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DAppVersion=$env:APP_VERSION" installer\cctv-analytics.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Item dist/*
+
+      - name: Install on this machine (silent)
+        shell: pwsh
+        env:
+          CI: "1"
+        run: |
+          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
+          $p = Start-Process dist\CCTV-Analytics-Setup.exe -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install-wizard.log"
+          Write-Host "Setup exit code: $($p.ExitCode)"
+          if (Test-Path "$dir\install.log") { Get-Content "$dir\install.log" -Tail 40 }
+          if (-not (Test-Path "$dir\.venv\Scripts\python.exe")) { Write-Error "venv missing"; exit 1 }
+          if (-not (Test-Path "$dir\config.yaml")) { Write-Error "config.yaml missing"; exit 1 }
+          Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\CCTV Analytics\CCTV Analytics.lnk"
+
+      - name: Start the app and check it analyses the sample video
+        shell: pwsh
+        run: |
+          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
+          $env:PYTHONUTF8 = "1"
+          $proc = Start-Process "$dir\.venv\Scripts\python.exe" -ArgumentList "run.py" -WorkingDirectory $dir `
+                    -RedirectStandardOutput app-out.log -RedirectStandardError app-err.log -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep 5
+            try {
+              $cams = Invoke-RestMethod http://localhost:8000/api/cameras
+              Write-Host ($cams | ConvertTo-Json -Depth 5 -Compress)
+              if ($cams[0].status -eq "online" -and $cams[0].fps -gt 0) { $ok = $true }
+              if ($ok -and $i -ge 12) { break }
+            } catch { Write-Host "waiting for server..." }
+          }
+          Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
+          Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
+          (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode
+          Stop-Process -Id $proc.Id -Force
+          Get-Content app-err.log -Tail 30
+          if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
+
+      - name: Run tests on Windows
+        shell: pwsh
+        run: |
+          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
+          & "$dir\.venv\Scripts\python.exe" -m pip install pytest -q
+          & "$dir\.venv\Scripts\python.exe" -m pytest -q tests
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CCTV-Analytics-Setup-${{ env.APP_VERSION }}
+          path: |
+            dist/CCTV-Analytics-Setup.exe
+            dist/cctv-analytics-update.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/CCTV-Analytics-Setup.exe
+            dist/cctv-analytics-update.zip
+          generate_release_notes: true

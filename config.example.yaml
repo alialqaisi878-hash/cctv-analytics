@@ -38,6 +38,13 @@ server:
   port: 8000
   password: ""            # set a password to protect the dashboard (username can be anything)
 
+updates:                  # online updates from GitHub, no reinstall needed
+  enabled: true
+  repo: "alialqaisi878-hash/cctv-analytics"
+  token: ""               # only if the GitHub repo is private: a read-only token
+  auto_install: true      # install new versions automatically outside working hours
+  check_hours: 6
+
 # Coordinates are fractions of the image: [x, y] where [0,0] = top-left, [1,1] = bottom-right.
 # Line: people crossing it are counted. The arrow drawn on the video shows the "IN" direction;
 # set invert: true if it points the wrong way.

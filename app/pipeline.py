@@ -4,21 +4,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
 
 import cv2
 import numpy as np
 
 from .analytics import LineCounter, ZoneTracker
+from .config import in_working_hours
 from .db import Database
 
 log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
-
-
-def _hhmm(s: str) -> tuple[int, int]:
-    h, m = s.split(":")
-    return int(h), int(m)
 
 
 class CameraWorker(threading.Thread):
@@ -185,13 +180,7 @@ class CameraWorker(threading.Thread):
             fire("crowding", f"ازدحام: {self.people_now} أشخاص في {self.cam['name']} (الحد {al['max_occupancy']})")
 
     def _in_working_hours(self, ts: float) -> bool:
-        wh = self.cfg["working_hours"]
-        d: datetime = self.db.local(ts)
-        if d.weekday() not in wh["days"]:
-            return False
-        sh, sm = _hhmm(wh["start"])
-        eh, em = _hhmm(wh["end"])
-        return (sh, sm) <= (d.hour, d.minute) < (eh, em)
+        return in_working_hours(self.cfg, self.db.local(ts))
 
     def _annotate(self, frame: np.ndarray, tracks):
         h, w = frame.shape[:2]
