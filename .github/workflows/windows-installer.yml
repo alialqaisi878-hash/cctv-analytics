@@ -67,8 +67,10 @@ jobs:
         env:
           CI: "1"
         run: |
-          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
-          $p = Start-Process dist\CCTV-Analytics-Setup.exe -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install-wizard.log"
+          # a non-English folder on purpose: that is how real users install it
+          $dir = "$env:RUNNER_TEMP\برامج\CCTVAnalytics"
+          "CCTV_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $p = Start-Process dist\CCTV-Analytics-Setup.exe -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=install-wizard.log", "/DIR=`"$dir`""
           Write-Host "Setup exit code: $($p.ExitCode)"
           if (Test-Path "$dir\install.log") { Get-Content "$dir\install.log" -Tail 40 }
           if (-not (Test-Path "$dir\.venv\Scripts\python.exe")) { Write-Error "venv missing"; exit 1 }
@@ -79,7 +81,7 @@ jobs:
       - name: Start the app and check it analyses the sample video
         shell: pwsh
         run: |
-          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
+          $dir = $env:CCTV_DIR
           $env:PYTHONUTF8 = "1"
           $proc = Start-Process "$dir\.venv\Scripts\python.exe" -ArgumentList "run.py" -WorkingDirectory $dir `
                     -RedirectStandardOutput app-out.log -RedirectStandardError app-err.log -PassThru
@@ -103,7 +105,7 @@ jobs:
       - name: Run tests on Windows
         shell: pwsh
         run: |
-          $dir = "$env:LOCALAPPDATA\CCTVAnalytics"
+          $dir = $env:CCTV_DIR
           & "$dir\.venv\Scripts\python.exe" -m pip install pytest -q
           & "$dir\.venv\Scripts\python.exe" -m pytest -q tests
           if ($LASTEXITCODE -ne 0) { exit 1 }
