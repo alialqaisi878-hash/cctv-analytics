@@ -45,6 +45,13 @@ DEFAULTS: dict[str, Any] = {
         "daily_report_time": "17:30",   # local time; "" disables the scheduled report
     },
     "server": {"host": "0.0.0.0", "port": 8000, "password": ""},
+    "updates": {
+        "enabled": True,
+        "repo": "alialqaisi878-hash/cctv-analytics",
+        "token": "",                # only needed if the GitHub repo is private
+        "auto_install": True,       # installs automatically outside working hours
+        "check_hours": 6,
+    },
     "cameras": [],
 }
 
@@ -85,3 +92,13 @@ def load_config(path: str | Path) -> dict:
 
 def save_config(cfg: dict, path: str | Path) -> None:
     Path(path).write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def in_working_hours(cfg: dict, d) -> bool:
+    """d: timezone-aware local datetime."""
+    wh = cfg["working_hours"]
+    if d.weekday() not in wh["days"]:
+        return False
+    sh, sm = (int(x) for x in wh["start"].split(":"))
+    eh, em = (int(x) for x in wh["end"].split(":"))
+    return (sh, sm) <= (d.hour, d.minute) < (eh, em)

@@ -12,12 +12,21 @@ import json
 import logging
 import random
 import shutil
+import socket
+import threading
 import time
+import webbrowser
 from pathlib import Path
 
 from app.config import load_config
 
 ROOT = Path(__file__).parent
+
+
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def seed_demo(cfg: dict, days: int = 7) -> None:
@@ -71,6 +80,7 @@ def main():
     ap.add_argument("--demo-data", action="store_true", help="write a sample week of data and exit")
     ap.add_argument("--report", action="store_true", help="print today's report and exit")
     ap.add_argument("--no-cameras", action="store_true", help="start dashboard without camera workers")
+    ap.add_argument("--open-browser", action="store_true", help="open the dashboard in the web browser")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -100,11 +110,21 @@ def main():
         print(Analyst(Database(cfg["database"], cfg["timezone"]), cfg).daily_report())
         return
 
+    host, port = cfg["server"]["host"], cfg["server"]["port"]
+    url = f"http://localhost:{port}"
+    if _port_in_use(port):
+        # already running (e.g. started from the desktop shortcut twice): just show it
+        print(f"CCTV Analytics is already running: {url}")
+        if args.open_browser:
+            webbrowser.open(url)
+        return
+
     import uvicorn
     from app.server import create_app
     api = create_app(cfg, start_cameras=not args.no_cameras)
-    host, port = cfg["server"]["host"], cfg["server"]["port"]
-    print(f"\n  Dashboard: http://localhost:{port}\n")
+    print(f"\n  Dashboard: {url}\n  (close this window to stop the program)\n")
+    if args.open_browser:
+        threading.Timer(2.5, webbrowser.open, args=(url,)).start()
     uvicorn.run(api, host=host, port=port, log_level="warning")
 
 

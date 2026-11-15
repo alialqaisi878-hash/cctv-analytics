@@ -53,6 +53,7 @@
 </header>
 <main>
   <div class="notice" id="notice" hidden></div>
+  <div class="notice" id="update" hidden style="background:#1b2533;border-color:#2c4a6e;color:#cfe0f5;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"></div>
 
   <section class="kpis">
     <div class="kpi"><div class="l">دخلوا</div><div class="v" id="k-in">-</div></div>
@@ -130,7 +131,7 @@ async function loadInfo() {
   const i = await j("/api/info");
   today = i.today; if (!$("day").value) $("day").value = today;
   $("site").textContent = i.site_name;
-  $("meta").textContent = `مدة حفظ البيانات: ${i.privacy.retention_days} يوم`;
+  $("meta").textContent = `الإصدار ${i.version} · مدة حفظ البيانات: ${i.privacy.retention_days} يوم`;
   if (i.privacy.show_notice) { $("notice").hidden = false; $("notice").textContent = i.privacy.notice_text; }
   $("blurinfo").textContent = i.privacy.blur_people ? "الوجوه مموّهة" : "";
   $("ai-state").textContent = i.ai_enabled ? "Claude مفعّل" : "بدون مفتاح API (تقرير أساسي فقط)";
@@ -215,9 +216,23 @@ $("discover").onclick = async () => {
 };
 $("day").onchange = loadStats;
 
+async function loadUpdate() {
+  const u = await j("/api/update"); const box = $("update");
+  if (u.installing) { box.hidden = false; box.textContent = "جاري تثبيت التحديث... البرنامج راح يرجع يشتغل خلال دقيقة."; return; }
+  if (!u.available) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<span>نسخة جديدة متوفرة: <b dir="ltr">${esc(u.latest)}</b> (عندك <span dir="ltr">${esc(u.current)}</span>). تنزل وتتنصب تلقائياً خارج الدوام، أو ثبتها هسه.</span><button id="upd-btn">تحديث الآن</button>`;
+  $("upd-btn").onclick = async () => {
+    $("upd-btn").disabled = true; box.firstChild.textContent = "جاري تنزيل وتثبيت التحديث... ";
+    try { await post("/api/update/install"); } catch (e) { box.firstChild.textContent = "فشل التحديث: " + e.message; return; }
+    const wait = setInterval(async () => { try { const i = await j("/api/info"); if (i.version !== u.current) { clearInterval(wait); location.reload(); } } catch (_) {} }, 3000);
+  };
+}
+
 (async () => {
   await loadInfo(); await Promise.all([loadCams(), loadStats()]);
   setInterval(loadCams, 2000);
+  loadUpdate(); setInterval(loadUpdate, 60000);
   setInterval(() => { if (($("day").value || today) === today) loadStats(); }, 15000);
 })();
 </script>
