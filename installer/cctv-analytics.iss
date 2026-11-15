@@ -40,6 +40,7 @@ Source: "..\installer\setup.ps1"; DestDir: "{app}\installer"; Flags: ignoreversi
 Source: "..\installer\launch.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\samples\*.mp4"; DestDir: "{app}\samples"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\models\*.pt"; DestDir: "{app}\models"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\tools\uv.exe"; DestDir: "{app}\tools"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#AppName}\{#AppName}"; Filename: "{app}\launch.bat"; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 22
@@ -58,6 +59,7 @@ Filename: "{app}\launch.bat"; Description: "Start {#AppName} now"; WorkingDir: "
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"
+Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\app"
 Type: files; Name: "{app}\install.log"
 Type: files; Name: "{app}\setup.lock"

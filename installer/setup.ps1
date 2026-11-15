@@ -1,7 +1,6 @@
 # Prepares the Python environment for CCTV Analytics on Windows.
 # Run by the installer after copying files; also available as "Repair" in the Start menu.
-#  - finds Python 3.10-3.13, or installs Python 3.12 for the current user
-#  - creates a private virtual environment in <AppDir>\.venv
+#  - gets a private Python 3.12 via uv (in <AppDir>\python) and a virtual environment in <AppDir>\.venv
 #  - installs PyTorch (GPU build if an NVIDIA card is found, otherwise CPU) and the app requirements
 #  - creates config.yaml from the example (never overwrites an existing one)
 param(
@@ -39,80 +38,47 @@ function Fail($msg) {
     exit 1
 }
 
-function Get-PythonExe([string[]]$cmd) {
-    # Returns the full path of a usable Python 3.10-3.13, or $null.
-    # Usable = a normal installation with venv + ensurepip, not another app's private copy in AppData\Roaming.
-    try {
-        $exe = $cmd[0]
-        $rest = @()
-        if ($cmd.Length -gt 1) { $rest = $cmd[1..($cmd.Length - 1)] }
-        $probe = "import sys, venv, ensurepip; v=sys.version_info[:2]; print(sys.executable if (3,10) <= v <= (3,13) else '')"
-        $out = & $exe @rest -c $probe 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        $path = "$out".Trim()
-        if (-not $path) { return $null }
-        if ($path.StartsWith($env:APPDATA, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
-        return $path
-    } catch { return $null }
-}
-
-function Find-Python {
-    $candidates = @(
-        @("py", "-3.12"), @("py", "-3.11"), @("py", "-3.13"), @("py", "-3.10"),
-        @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"),
-        @("$env:LOCALAPPDATA\Programs\Python\Python311\python.exe"),
-        @("$env:ProgramFiles\Python312\python.exe"),
-        @("$env:ProgramFiles\Python311\python.exe"),
-        @("python")
-    )
-    foreach ($c in $candidates) {
-        $p = Get-PythonExe $c
-        if ($p) { return $p }
-    }
-    return $null
-}
-
 try {
     Write-Host "CCTV Analytics setup. This downloads about 300-600 MB and can take 5-15 minutes." -ForegroundColor Green
     Write-Host "Install folder: $AppDir"
 
-    Step "Looking for Python 3.10-3.13"
-    $py = Find-Python
-    if (-not $py) {
-        Step "Python not found - downloading Python 3.12"
-        $pyUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
-        $pyInstaller = Join-Path $env:TEMP "python-3.12-installer.exe"
-        Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing -ErrorAction Stop
-        Step "Installing Python 3.12 (for this user only)"
-        $p = Start-Process -FilePath $pyInstaller -Wait -PassThru -ErrorAction Stop -ArgumentList `
-            "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1", "Include_test=0", "Include_doc=0"
-        if ($p.ExitCode -ne 0) { Fail "Python installer exited with code $($p.ExitCode)" }
-        Remove-Item $pyInstaller -ErrorAction SilentlyContinue
-        $py = Find-Python
-        if (-not $py) { Fail "Python was installed but could not be found." }
+    # Python is provided by uv (https://github.com/astral-sh/uv) as a private copy inside the app
+    # folder, so nothing depends on (or interferes with) other Pythons installed on this PC.
+    $tools = Join-Path $AppDir "tools"
+    $uv = Join-Path $tools "uv.exe"
+    if (-not (Test-Path $uv)) {
+        Step "Downloading uv (Python manager)"
+        New-Item -ItemType Directory -Force $tools | Out-Null
+        $uvZip = Join-Path $env:TEMP "uv-windows.zip"
+        Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip" `
+            -OutFile $uvZip -UseBasicParsing -ErrorAction Stop
+        Expand-Archive -Path $uvZip -DestinationPath $tools -Force -ErrorAction Stop
+        Remove-Item $uvZip -ErrorAction SilentlyContinue
+        if (-not (Test-Path $uv)) { Fail "uv.exe missing after download" }
     }
-    Write-Host "Using Python: $py"
+    $env:UV_PYTHON_INSTALL_DIR = Join-Path $AppDir "python"
+    $env:UV_LINK_MODE = "copy"          # the uv cache and the app may be on different drives
+    $env:UV_HTTP_TIMEOUT = "180"
 
     $venv = Join-Path $AppDir ".venv"
     $vpy = Join-Path $venv "Scripts\python.exe"
-    # rebuild an environment that was made from another app's private Python (older versions allowed that)
+    # environments made by older versions of this setup (with whatever Python was on the PC) are rebuilt
     $cfgFile = Join-Path $venv "pyvenv.cfg"
-    if (Test-Path $cfgFile) {
-        $venvHome = ((Get-Content $cfgFile | Where-Object { $_ -like "home*" }) -split "=", 2)[1]
-        if ($venvHome -and $venvHome.Trim().StartsWith($env:APPDATA, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Step "Rebuilding the Python environment with a standard Python"
-            Remove-Item -Recurse -Force $venv
-        }
-    }
-    if (-not (Test-Path $vpy)) {
-        Step "Creating private Python environment"
-        & $py -m venv $venv
-        if ($LASTEXITCODE -ne 0) { Fail "could not create the virtual environment" }
+    if ((Test-Path $venv) -and -not ((Test-Path $cfgFile) -and (Select-String -Path $cfgFile -Pattern "^uv\s*=" -Quiet))) {
+        Step "Removing the old Python environment"
+        Remove-Item -Recurse -Force $venv -ErrorAction SilentlyContinue
+        if (Test-Path $venv) { Fail "could not delete $venv - close all CCTV Analytics windows and try again" }
     }
 
-    Step "Updating pip"
-    & $vpy -m pip install --upgrade pip --disable-pip-version-check --timeout 60 --retries 5 -q
-    if ($LASTEXITCODE -ne 0) { Fail "pip upgrade failed" }
+    Step "Preparing private Python 3.12"
+    & $uv python install 3.12
+    if ($LASTEXITCODE -ne 0) { Fail "could not download Python 3.12" }
+
+    if (-not (Test-Path $vpy)) {
+        Step "Creating private Python environment"
+        & $uv venv $venv --python 3.12 --python-preference only-managed --seed
+        if ($LASTEXITCODE -ne 0) { Fail "could not create the Python environment" }
+    }
 
     $hasNvidia = $false
     try { $null = Get-Command nvidia-smi -ErrorAction Stop; & nvidia-smi -L *> $null; $hasNvidia = ($LASTEXITCODE -eq 0) } catch {}
@@ -122,18 +88,18 @@ try {
     if ($LASTEXITCODE -ne 0) {
         if ($hasNvidia) {
             Step "NVIDIA graphics card found - installing PyTorch with GPU support (large download)"
-            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 --disable-pip-version-check --timeout 60 --retries 5
+            & $uv pip install --python $vpy torch torchvision --index-url https://download.pytorch.org/whl/cu126
             if ($LASTEXITCODE -ne 0) { Write-Host "GPU build failed, falling back to CPU build" -ForegroundColor Yellow; $hasNvidia = $false }
         }
         if (-not $hasNvidia) {
             Step "Installing PyTorch (CPU version)"
-            & $vpy -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --disable-pip-version-check --timeout 60 --retries 5
+            & $uv pip install --python $vpy torch torchvision --index-url https://download.pytorch.org/whl/cpu
             if ($LASTEXITCODE -ne 0) { Fail "PyTorch installation failed" }
         }
     }
 
     Step "Installing program libraries"
-    & $vpy -m pip install -r (Join-Path $AppDir "requirements.txt") --disable-pip-version-check --timeout 60 --retries 5
+    & $uv pip install --python $vpy -r (Join-Path $AppDir "requirements.txt")
     if ($LASTEXITCODE -ne 0) { Fail "installing requirements failed" }
 
     $cfg = Join-Path $AppDir "config.yaml"
