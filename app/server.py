@@ -20,8 +20,10 @@ from . import discovery
 from .agent import Analyst
 from .analytics import LineCounter
 from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
-                     public_settings, remove_local_camera, set_camera_lines)
+                     notice_text, public_settings, remove_local_camera, set_camera_lines)
 from .db import Database
+from .faces import FaceEngine, decode_image
+from .notify import Notifier
 from .pipeline import CameraWorker
 from .updater import Updater
 from .version import __version__
@@ -35,18 +37,26 @@ class App:
         self.cfg = cfg
         self.db = Database(cfg["database"], cfg["timezone"])
         self.analyst = Analyst(self.db, cfg)
+        self.faces = FaceEngine(Path(cfg["database"]).parent, cfg["faces"]["threshold"])
+        if cfg["faces"]["enabled"]:
+            self.faces.ensure_ready()
+        self.notifier = Notifier(cfg)
         self.workers: dict[str, CameraWorker] = {}
         if start_cameras:
             for cam in cfg["cameras"]:
                 if cam["enabled"]:
-                    w = CameraWorker(cam, cfg, self.db)
-                    self.workers[cam["id"]] = w
-                    w.start()
+                    self.start_worker(cam)
         threading.Thread(target=self._housekeeping, daemon=True, name="housekeeping").start()
         self.last_seen = time.time()      # last request from a dashboard (see /api/window/state)
         self.closed_at = 0.0              # when a dashboard page last said it was being closed
         self.updater = Updater(cfg)
         self.updater.run_background(lambda: in_working_hours(cfg, self.db.local(time.time())))
+
+    def start_worker(self, cam: dict) -> CameraWorker:
+        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier)
+        self.workers[cam["id"]] = w
+        w.start()
+        return w
 
     def _housekeeping(self):
         """Retention cleanup every hour + scheduled daily report."""
@@ -111,8 +121,12 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     def info():
         p = cfg["privacy"]
         return {"site_name": cfg["site_name"], "today": db.today(), "ai_enabled": core.analyst.ai_enabled,
-                "version": __version__,
-                "privacy": {"show_notice": p["show_notice"], "notice_text": p["notice_text"],
+                "ai_provider": core.analyst.provider, "version": __version__,
+                "unseen_alerts": db.unseen_count(), "last_alert_id": db.last_alert_id(),
+                "faces": {"enabled": cfg["faces"]["enabled"], "status": core.faces.status,
+                          "people": len(core.faces.people)},
+                "notify": {"enabled": core.notifier.enabled, "last_error": core.notifier.last_error},
+                "privacy": {"show_notice": p["show_notice"], "notice_text": notice_text(cfg),
                             "retention_days": p["retention_days"], "blur_people": p["blur_people"]}}
 
     cam_lock = threading.Lock()
@@ -159,9 +173,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             add_local_camera(cfg["_cameras_file"], copy.deepcopy(cam))
             normalize_camera(cam)
             cfg["cameras"].append(cam)
-            w = CameraWorker(cam, cfg, db)
-            core.workers[cam_id] = w
-            w.start()
+            core.start_worker(cam)
         log.info("camera %s added (%s)", cam_id, found["vendor"])
         return {"id": cam_id, "name": name, "vendor": found["vendor"]}
 
@@ -219,8 +231,119 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         return db.zone_dwell(day_or_today(day))
 
     @api.get("/api/alerts")
-    def alerts(day: str | None = None):
-        return db.alerts(day)
+    def alerts(day: str | None = None, kind: str | None = None, limit: int = 50):
+        return db.alerts(day, max(1, min(limit, 500)), kind or None)
+
+    @api.get("/api/alerts/feed")
+    def alerts_feed(after: int = 0):
+        """New alerts since the given id (the dashboard pops them up)."""
+        return {"alerts": db.alerts_after(after), "unseen": db.unseen_count()}
+
+    @api.get("/api/alerts/{alert_id}/image")
+    def alert_image(alert_id: int):
+        p = db.alert_image(alert_id)
+        if p is None:
+            raise HTTPException(404, "لا توجد صورة لهذا التنبيه.")
+        return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
+
+    @api.post("/api/alerts/seen")
+    def alerts_seen(payload: dict = Body(default={})):
+        ids = payload.get("ids")
+        db.mark_seen([int(i) for i in ids] if isinstance(ids, list) else None)
+        return {"unseen": db.unseen_count()}
+
+    # ---------- face recognition: enrolled people ----------
+    def _picture(payload: dict):
+        if payload.get("image"):
+            try:
+                img = decode_image(payload["image"])
+            except (ValueError, TypeError):
+                img = None
+            if img is None:
+                raise HTTPException(400, "الصورة غير صالحة. اختر صورة JPG أو PNG.")
+            return img
+        w = core.workers.get(str(payload.get("camera_id") or ""))
+        img = w.latest_raw() if w else None
+        if img is None:
+            raise HTTPException(400, "ما وصلت صورة من هذه الكاميرا بعد.")
+        return img
+
+    def _need_faces():
+        if not cfg["faces"]["enabled"]:
+            raise HTTPException(400, "فعّل التعرف على الوجه من الإعدادات أولاً.")
+        if not core.faces.ready:
+            raise HTTPException(503, "جاري تجهيز التعرف على الوجه (تنزيل النموذج أول مرة). انتظر دقيقة وحاول."
+                                if core.faces.status == "downloading" else f"التعرف على الوجه غير جاهز: {core.faces.status}")
+
+    @api.get("/api/people")
+    def people():
+        seen = db.last_seen()
+        return {"status": core.faces.status, "enabled": cfg["faces"]["enabled"],
+                "people": [dict(p, last_seen=seen.get(p["id"])) for p in core.faces.public_people()]}
+
+    @api.post("/api/people")
+    def add_person(payload: dict = Body(...)):
+        _need_faces()
+        try:
+            return core.faces.enroll(str(payload.get("name") or ""), _picture(payload),
+                                     alert_on_seen=bool(payload.get("alert_on_seen")), note=str(payload.get("note") or ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @api.post("/api/people/{pid}/photos")
+    def add_photo(pid: str, payload: dict = Body(...)):
+        _need_faces()
+        try:
+            return core.faces.enroll("", _picture(payload), person_id=pid)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @api.patch("/api/people/{pid}")
+    def edit_person(pid: str, payload: dict = Body(...)):
+        try:
+            core.faces.update_person(pid, payload)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"ok": True}
+
+    @api.delete("/api/people/{pid}")
+    def delete_person(pid: str):
+        if not core.faces.remove(pid):
+            raise HTTPException(404, "الشخص غير موجود.")
+        db.forget_person(pid)
+        return {"ok": True}
+
+    @api.get("/api/people/{pid}/photo")
+    def person_photo(pid: str):
+        p = core.faces.thumb(pid)
+        if p is None:
+            raise HTTPException(404, "no photo")
+        return FileResponse(p, media_type="image/jpeg")
+
+    @api.get("/api/attendance")
+    def attendance(day: str | None = None):
+        return db.attendance(day_or_today(day))
+
+    @api.post("/api/notify/test")
+    def notify_test():
+        if not core.notifier.enabled:
+            raise HTTPException(400, "أكمل إعدادات الإرسال (الطريقة والرمز والرقم) واحفظها أولاً.")
+        jpg = next((w.latest_jpeg() for w in core.workers.values() if w.latest_jpeg()), None)
+        try:
+            core.notifier.send("✅ رسالة تجربة من برنامج الكاميرات. التنبيهات راح توصلك هنا.", jpg)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"ما وصلت الرسالة: {e}")
+        return {"ok": True, "with_image": jpg is not None}
+
+    @api.get("/api/cameras/{cam_id}/snapshot.jpg")
+    def camera_snapshot(cam_id: str):
+        w = core.workers.get(cam_id)
+        jpg = w.latest_jpeg() if w else None
+        if jpg is None:
+            raise HTTPException(404, "no picture yet")
+        name = time.strftime("%Y-%m-%d_%H-%M-%S")
+        return Response(jpg, media_type="image/jpeg",
+                        headers={"Content-Disposition": f'attachment; filename="{cam_id}_{name}.jpg"'})
 
     @api.get("/api/export.csv")
     def export(day: str | None = None):
@@ -286,6 +409,9 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             apply_settings(cfg, payload)
         except ValueError as e:
             raise HTTPException(400, f"قيمة غير صحيحة: {e}")
+        if cfg["faces"]["enabled"]:
+            core.faces.ensure_ready()       # downloads the face models the first time
+        core.analyst._openai_model_cache = None
         return public_settings(cfg)
 
     @api.post("/api/discover")

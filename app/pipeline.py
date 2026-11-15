@@ -21,9 +21,10 @@ PERSON = 0  # COCO class id
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, cam: dict, cfg: dict, db: Database):
+    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None):
         super().__init__(daemon=True, name=f"cam-{cam['id']}")
         self.cam, self.cfg, self.db = cam, cfg, db
+        self.faces, self.notifier = faces, notifier     # FaceEngine / Notifier, both optional
         self.id = cam["id"]
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -37,6 +38,14 @@ class CameraWorker(threading.Thread):
         self._model = None
         self._last_occ_write = 0.0
         self._last_alert: dict[str, float] = {}
+        self._pending: list[tuple[str, str, str | None]] = []   # alerts waiting for this frame's picture
+        self.raw: np.ndarray | None = None      # latest unmarked picture (for enrolling faces from a camera)
+        self._last_raw = 0.0
+        self._last_face = 0.0
+        self.names: dict[int, dict] = {}        # track id -> recognised person (or unknown) for the live view
+        self._unknown_seen: dict[int, int] = {}
+        self._offline_since: float | None = None
+        self._was_online = False
 
     # ---------- public ----------
     def snapshot(self) -> dict:
@@ -52,6 +61,10 @@ class CameraWorker(threading.Thread):
     def latest_jpeg(self) -> bytes | None:
         with self.lock:
             return self.jpeg
+
+    def latest_raw(self) -> np.ndarray | None:
+        with self.lock:
+            return None if self.raw is None else self.raw.copy()
 
     def stop(self):
         self.stop_event.set()
@@ -81,6 +94,7 @@ class CameraWorker(threading.Thread):
             cap = self._open()
             if not cap.isOpened():
                 self.status = "offline"
+                self._note_offline()
                 log.warning("camera %s offline, retrying in %ss", self.id, backoff)
                 self.stop_event.wait(backoff)
                 backoff = min(backoff * 2, 60)
@@ -88,6 +102,7 @@ class CameraWorker(threading.Thread):
             backoff = 2
             self.status = "online"
             self._loop(cap)
+            self._note_offline()
             cap.release()
             if self.cam.get("loop") and not self.stop_event.is_set():
                 # restart sample video: reset tracker so IDs don't carry across
@@ -102,6 +117,18 @@ class CameraWorker(threading.Thread):
                     return
                 self.status = "reconnecting"
                 self.stop_event.wait(2)
+
+    def _note_offline(self) -> None:
+        """Alert once when a camera that was working stops sending pictures for 2 minutes."""
+        now = time.time()
+        if self._offline_since is None:
+            self._offline_since = now
+        elif (self._was_online and now - self._offline_since >= 120 and self.cfg["alerts"].get("camera_offline", True)
+              and not self._is_file()):
+            self._was_online = False
+            self.db.add_alert(now, self.id, "offline", f"الكاميرا {self.cam['name']} مفصولة أو ما تبث صورة")
+            if self.notifier:
+                self.notifier.queue_alert("offline", f"⚠️ الكاميرا {self.cam['name']} مفصولة أو ما تبث صورة", None)
 
     def _is_file(self) -> bool:
         src = str(self.cam["source"])
@@ -122,6 +149,8 @@ class CameraWorker(threading.Thread):
             if is_file and frame_i % skip:
                 continue
             t0 = time.time()
+            self._offline_since = None
+            self._was_online = True
             self._process(frame, t0)
             # pace: real-time for files, rate-limit for live streams
             elapsed = time.time() - t0
@@ -147,6 +176,11 @@ class CameraWorker(threading.Thread):
                 foot = ((x1 + x2) / 2 / w, y2 / h)  # bottom-centre = where the person stands
                 tracks.append((tid, (x1, y1, x2, y2), foot))
         self.people_now = len(tracks)
+        if ts - self._last_raw >= 1.0:
+            self._last_raw = ts
+            with self.lock:
+                self.raw = frame.copy()
+        self._recognise(frame, tracks, ts)
 
         for tid, _, foot in tracks:
             for lc in self.lines:
@@ -167,21 +201,77 @@ class CameraWorker(threading.Thread):
             self.db.add_occupancy(ts, self.id, self.people_now)
         self._check_alerts(ts)
         self._annotate(frame, tracks)
+        self._flush_alerts(ts)
+
+    # ---------- face recognition (only people enrolled by the owner) ----------
+    def _recognise(self, frame: np.ndarray, tracks, ts: float) -> None:
+        alive = {t[0] for t in tracks}
+        for tid in list(self.names):
+            if tid not in alive:
+                self.names.pop(tid, None)
+                self._unknown_seen.pop(tid, None)
+        fc = self.cfg["faces"]
+        if not (fc["enabled"] and self.faces and self.faces.ready and tracks):
+            return
+        if ts - self._last_face < fc.get("interval_s", 0.5):
+            return
+        # people already named are not checked again while they stay in view
+        if all(self.names.get(t[0], {}).get("person_id") for t in tracks):
+            return
+        self._last_face = ts
+        self.faces.threshold = fc["threshold"]
+        for f in self.faces.analyse(frame):
+            fx, fy = (f["box"][0] + f["box"][2]) / 2, (f["box"][1] + f["box"][3]) / 2
+            tid = next((t[0] for t in tracks if t[1][0] <= fx <= t[1][2] and t[1][1] <= fy <= t[1][1] + (t[1][3] - t[1][1]) * 0.5),
+                       None)
+            if tid is None:
+                continue
+            p = f["person"]
+            if p is None:
+                if not self.names.get(tid, {}).get("person_id"):
+                    self._unknown_seen[tid] = self._unknown_seen.get(tid, 0) + 1
+                    self.names[tid] = {"person_id": None, "name": "غير معروف"}
+                    if self._unknown_seen[tid] == 3:    # seen clearly a few times, still nobody we know
+                        self._unknown_alert(ts)
+                continue
+            if self.names.get(tid, {}).get("person_id") == p["id"]:
+                continue
+            self.names[tid] = {"person_id": p["id"], "name": p["name"]}
+            self.db.add_sighting(ts, self.id, p["id"], p["name"], f["score"])
+            log.info("recognised %s on %s (%.2f)", p["name"], self.id, f["score"])
+            if p.get("alert_on_seen"):
+                self._queue_alert(ts, f"person:{p['id']}", f"تم رصد {p['name']} في {self.cam['name']}", p["id"])
+
+    def _unknown_alert(self, ts: float) -> None:
+        if self.cfg["alerts"].get("unknown_after_hours") and not self._in_working_hours(ts):
+            self._queue_alert(ts, "unknown", f"شخص غير معروف خارج أوقات الدوام في {self.cam['name']}")
+
+    # ---------- alerts ----------
+    def _queue_alert(self, ts: float, kind: str, msg: str, person_id: str | None = None) -> None:
+        cooldown = self.cfg["alerts"]["cooldown_minutes"] * 60
+        if ts - self._last_alert.get(kind, 0) >= cooldown:
+            self._last_alert[kind] = ts
+            self._pending.append((kind, msg, person_id))
+
+    def _flush_alerts(self, ts: float) -> None:
+        """Save the alerts of this frame together with its (marked) picture."""
+        if not self._pending:
+            return
+        jpg = self.latest_jpeg() if self.cfg["privacy"].get("save_alert_pictures", True) else None
+        for kind, msg, pid in self._pending:
+            self.db.add_alert(ts, self.id, kind.split(":", 1)[0], msg, jpg, pid)
+            log.info("ALERT %s %s: %s", self.id, kind, msg)
+            if self.notifier:
+                t = self.db.local(ts).strftime("%H:%M")
+                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg())
+        self._pending.clear()
 
     def _check_alerts(self, ts: float):
         al = self.cfg["alerts"]
-        cooldown = al["cooldown_minutes"] * 60
-
-        def fire(kind, msg):
-            if ts - self._last_alert.get(kind, 0) >= cooldown:
-                self._last_alert[kind] = ts
-                self.db.add_alert(ts, self.id, kind, msg)
-                log.info("ALERT %s %s: %s", self.id, kind, msg)
-
         if al["after_hours_presence"] and self.people_now > 0 and not self._in_working_hours(ts):
-            fire("after_hours", f"تم رصد {self.people_now} شخص خارج أوقات الدوام في {self.cam['name']}")
+            self._queue_alert(ts, "after_hours", f"تم رصد {self.people_now} شخص خارج أوقات الدوام في {self.cam['name']}")
         if al["max_occupancy"] and self.people_now > al["max_occupancy"]:
-            fire("crowding", f"ازدحام: {self.people_now} أشخاص في {self.cam['name']} (الحد {al['max_occupancy']})")
+            self._queue_alert(ts, "crowding", f"ازدحام: {self.people_now} أشخاص في {self.cam['name']} (الحد {al['max_occupancy']})")
 
     def _in_working_hours(self, ts: float) -> bool:
         return in_working_hours(self.cfg, self.db.local(ts))
@@ -192,14 +282,19 @@ class CameraWorker(threading.Thread):
         blur = self.cfg["privacy"]["blur_people"]
         for tid, (x1, y1, x2, y2), _ in tracks:
             x1, y1, x2, y2 = max(int(x1), 0), max(int(y1), 0), min(int(x2), w), min(int(y2), h)
-            if blur and x2 > x1 and y2 > y1:
+            who = self.names.get(tid)
+            if blur and x2 > x1 and y2 > y1 and not (who and who.get("person_id")):
                 hy2 = y1 + max(int((y2 - y1) * 0.25), 1)  # head region
                 roi = frame[y1:hy2, x1:x2]
                 if roi.size:
                     k = max((x2 - x1) // 3 | 1, 15)
                     frame[y1:hy2, x1:x2] = cv2.GaussianBlur(roi, (k, k), 0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 200, 120), 2)
-            cv2.putText(frame, f"#{tid}", (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 200, 120), 2)
+            color = (80, 200, 120) if not who else ((255, 170, 60) if who.get("person_id") else (60, 60, 230))
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            if who:
+                _label(frame, who["name"], (x1, max(y1 - 4, 18)), color)
+            else:
+                cv2.putText(frame, f"#{tid}", (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         for zc, z in zip(self.cam["zones"], self.zones):
             pts = np.array([P(p) for p in zc["points"]], np.int32)
             overlay = frame.copy()
@@ -225,3 +320,56 @@ class CameraWorker(threading.Thread):
         if ok:
             with self.lock:
                 self.jpeg = buf.tobytes()
+
+
+_FONT = None
+
+
+def _font(size: int = 18):
+    """A font with Arabic letters for names on the picture (Windows fonts; None if unavailable)."""
+    global _FONT
+    if _FONT is None:
+        _FONT = False
+        try:
+            from PIL import ImageFont
+            for f in ("C:/Windows/Fonts/tahoma.ttf", "C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/segoeui.ttf",
+                      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+                try:
+                    _FONT = ImageFont.truetype(f, size)
+                    break
+                except OSError:
+                    continue
+        except ImportError:
+            pass
+    return _FONT or None
+
+
+def _shape(text: str) -> str:
+    """Join Arabic letters and order them right-to-left so PIL draws them readable."""
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except ImportError:
+        return text
+
+
+def _label(frame: np.ndarray, text: str, org: tuple[int, int], color) -> None:
+    font = _font()
+    ascii_only = all(ord(ch) < 128 for ch in text)
+    if font is None or ascii_only:
+        cv2.putText(frame, text if ascii_only else "?", org, cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        return
+    from PIL import Image, ImageDraw
+    x, y = org
+    shaped = _shape(text)
+    l, t, r, b = font.getbbox(shaped)
+    tw, th = r - l + 8, b - t + 6
+    y0 = max(y - th, 0)
+    x0 = min(max(x, 0), max(frame.shape[1] - tw, 0))
+    patch = frame[y0:y0 + th, x0:x0 + tw]
+    if patch.size == 0:
+        return
+    img = Image.new("RGB", (patch.shape[1], patch.shape[0]), (int(color[2]), int(color[1]), int(color[0])))
+    ImageDraw.Draw(img).text((4 - l, 3 - t), shaped, font=font, fill=(0, 0, 0))
+    frame[y0:y0 + th, x0:x0 + tw] = np.asarray(img)[:, :, ::-1]

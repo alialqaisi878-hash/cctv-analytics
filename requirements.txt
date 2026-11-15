@@ -7,3 +7,6 @@ anthropic>=2.0          # Claude API for the AI analyst (optional at runtime)
 pyyaml>=6.0
 numpy
 pytest                  # for running the tests
+httpx>=0.27              # WhatsApp / Telegram alerts and the OpenAI assistant
+arabic-reshaper>=3.0     # Arabic names drawn on the live picture
+python-bidi>=0.4

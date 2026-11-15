@@ -16,7 +16,7 @@ privacy:
   show_notice: true       # shows the privacy notice on the dashboard
   blur_people: true       # blurs heads in the live view
   retention_days: 30      # aggregate data older than this is deleted automatically
-  store_snapshots: false  # the app never saves video/images to disk
+  save_alert_pictures: true  # one picture per alert, deleted after retention_days. No video is ever saved
 
 working_hours:            # used for "after hours" alerts and in reports
   start: "08:00"

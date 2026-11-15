@@ -132,6 +132,19 @@ jobs:
           Get-Content "$dir\data\settings.yaml" -Encoding utf8
           try { Invoke-RestMethod http://localhost:8000/api/cameras/add -Method Post -ContentType "application/json" -Body '{"ip":"127.0.0.1","port":9,"username":"admin","password":"x"}'; Write-Error "adding a camera that does not exist should fail"; exit 1 }
           catch { Write-Host "add camera (nothing there): HTTP $($_.Exception.Response.StatusCode.value__)" }
+          # face recognition: switching it on downloads the models; then a person can be enrolled from a photo
+          Invoke-RestMethod http://localhost:8000/api/settings -Method Post -ContentType "application/json" -Body '{"faces":{"enabled":true}}' | Out-Null
+          $ready = $false
+          for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; $ppl = Invoke-RestMethod http://localhost:8000/api/people; if ($ppl.status -eq "ready") { $ready = $true; break }; if ("$($ppl.status)" -like "error*") { break } }
+          if (-not $ready) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "face recognition did not get ready: $($ppl.status)"; exit 1 }
+          Invoke-WebRequest https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/lena.jpg -OutFile face.jpg
+          $img = "data:image/jpeg;base64," + [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\face.jpg"))
+          $person = Invoke-RestMethod http://localhost:8000/api/people -Method Post -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes((@{ name = "موظف تجربة"; image = $img } | ConvertTo-Json)))
+          if ($person.photos -ne 1) { Write-Error "enrolling a person failed"; exit 1 }
+          Write-Host "face recognition ready, person enrolled: $($person.id)"
+          $feed = Invoke-RestMethod "http://localhost:8000/api/alerts/feed?after=0"
+          Write-Host "alerts so far: $($feed.alerts.Count), unseen $($feed.unseen)"
+          foreach ($a in $feed.alerts) { if ($a.has_image) { $r = Invoke-WebRequest "http://localhost:8000/api/alerts/$($a.id)/image" -UseBasicParsing; Write-Host "alert picture: $($r.RawContentLength) bytes"; break } }
           # the app window must exist, and closing it must stop the program
           $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
           Write-Host "app window processes: $(@($win).Count) $(@($win).Name -join ',')"
