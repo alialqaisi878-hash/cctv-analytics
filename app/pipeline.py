@@ -128,7 +128,8 @@ class CameraWorker(threading.Thread):
             self._was_online = False
             self.db.add_alert(now, self.id, "offline", f"الكاميرا {self.cam['name']} مفصولة أو ما تبث صورة")
             if self.notifier:
-                self.notifier.queue_alert("offline", f"⚠️ الكاميرا {self.cam['name']} مفصولة أو ما تبث صورة", None)
+                self.notifier.queue_alert("offline", f"⚠️ الكاميرا {self.cam['name']} مفصولة أو ما تبث صورة", None,
+                                          {"camera_id": self.id, "camera": self.cam["name"]})
 
     def _is_file(self) -> bool:
         src = str(self.cam["source"])
@@ -263,7 +264,10 @@ class CameraWorker(threading.Thread):
             log.info("ALERT %s %s: %s", self.id, kind, msg)
             if self.notifier:
                 t = self.db.local(ts).strftime("%H:%M")
-                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg())
+                person = self.faces.person(pid) if (pid and self.faces) else None
+                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg(),
+                                          {"camera_id": self.id, "camera": self.cam["name"],
+                                           "person": {"id": pid, "name": person["name"]} if person else None})
         self._pending.clear()
 
     def _check_alerts(self, ts: float):

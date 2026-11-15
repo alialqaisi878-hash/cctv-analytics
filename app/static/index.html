@@ -253,11 +253,11 @@
           <div class="muted" style="padding-top:8px">مهم: بلّغ الموظفين إن النظام يتعرف على الوجوه، وسجّل بس اللي موافقين. التنبيه بالرئيسية يتحدث تلقائياً.</div>
         </div>
         <div class="card"><h2>إرسال التنبيهات (واتساب / تلگرام)</h2>
-          <div class="field"><label for="n-prov">طريقة الإرسال</label><select id="n-prov"><option value="">بدون</option><option value="greenapi">واتساب: Green-API</option><option value="ultramsg">واتساب: UltraMsg</option><option value="telegram">تلگرام بوت</option></select></div>
+          <div class="field"><label for="n-prov">طريقة الإرسال</label><select id="n-prov"><option value="">بدون</option><option value="greenapi">واتساب: Green-API</option><option value="ultramsg">واتساب: UltraMsg</option><option value="telegram">تلگرام بوت</option><option value="webhook">n8n / Webhook (شكيب)</option></select></div>
           <div class="field" id="n-inst-f"><label for="n-inst">رقم الـ Instance<small>من لوحة الخدمة بعد ما تربط رقم الواتساب بالـ QR</small></label><input type="text" id="n-inst" class="ltr"></div>
-          <div class="field"><label for="n-tok">الرمز (Token)<small id="n-tok-state"></small></label><input type="password" id="n-tok" class="ltr" autocomplete="off"></div>
-          <div class="field"><label for="n-to" id="n-to-l">رقم الواتساب اللي توصله التنبيهات</label><input type="text" id="n-to" class="ltr" placeholder="07701234567"></div>
-          <div class="field"><label for="n-url">عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small></label><input type="text" id="n-url" class="ltr" placeholder="https://..."></div>
+          <div class="field" id="n-tok-f"><label for="n-tok">الرمز (Token)<small id="n-tok-state"></small></label><input type="password" id="n-tok" class="ltr" autocomplete="off"></div>
+          <div class="field" id="n-to-f"><label for="n-to" id="n-to-l">رقم الواتساب اللي توصله التنبيهات</label><input type="text" id="n-to" class="ltr" placeholder="07701234567"></div>
+          <div class="field"><label for="n-url" id="n-url-l">عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small></label><input type="text" id="n-url" class="ltr" placeholder="https://..."></div>
           <div class="field"><label for="n-img">إرسال صورة التنبيه</label><input type="checkbox" id="n-img"></div>
           <div class="field" style="display:block"><label>أنواع التنبيهات المرسلة <small>إذا ما اخترت شي ترسل كلها</small></label><div class="days" id="n-kinds" style="margin-top:8px"></div></div>
           <div class="field"><label>جرّب الإرسال بعد الحفظ<small id="n-state"></small></label><button class="btn ghost small" id="n-test">أرسل رسالة تجربة</button></div>
@@ -733,13 +733,17 @@ $("n-kinds").innerHTML = Object.entries(KIND).map(([k, v]) => `<label><input typ
 function notifyForm() {
   const p = $("n-prov").value;
   $("n-inst-f").hidden = p === "telegram" || !p;
-  $("n-to-l").textContent = p === "telegram" ? "رقم المحادثة (chat id)" : "رقم الواتساب اللي توصله التنبيهات";
+  const hook = p === "webhook";
+  $("n-to-l").textContent = p === "telegram" ? "رقم المحادثة (chat id)" : hook ? "رقم الواتساب (اختياري، يوصل للفلو)" : "رقم الواتساب اللي توصله التنبيهات";
   $("n-to").placeholder = p === "telegram" ? "123456789" : "07701234567";
+  $("n-url-l").innerHTML = hook ? "رابط الـ Webhook<small>Production URL من عقدة Webhook بـ n8n</small>" : "عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small>";
+  $("n-url").placeholder = hook ? "https://n8n.example.com/webhook/cctv" : "https://...";
+  $("n-tok-f").querySelector("label").firstChild.textContent = hook ? "رمز سري (اختياري)" : "الرمز (Token)";
 }
 $("n-prov").onchange = notifyForm;
 $("n-test").onclick = async () => {
   $("n-test").disabled = true; $("n-state").textContent = "جاري الإرسال...";
-  try { const r = await post("/api/notify/test"); $("n-state").textContent = r.with_image ? "انرسلت مع صورة. شوف الواتساب" : "انرسلت. شوف الواتساب"; }
+  try { const r = await post("/api/notify/test"); $("n-state").textContent = (r.with_image ? "انرسلت مع صورة" : "انرسلت") + ($("n-prov").value === "webhook" ? ". شوف Executions بـ n8n" : ". شوف الواتساب"); }
   catch (e) { $("n-state").textContent = e.message; }
   $("n-test").disabled = false;
 };

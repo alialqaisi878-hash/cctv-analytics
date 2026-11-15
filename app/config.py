@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-PROVIDERS = ("", "greenapi", "ultramsg", "telegram")
+PROVIDERS = ("", "greenapi", "ultramsg", "telegram", "webhook")
 
 DEFAULTS: dict[str, Any] = {
     "site_name": "My workplace",
@@ -46,7 +46,7 @@ DEFAULTS: dict[str, Any] = {
         "unknown_after_hours": False,  # (face recognition) alert for unknown faces outside working hours
     },
     "notify": {                     # send alerts with their picture to WhatsApp / Telegram (see app/notify.py)
-        "provider": "",             # "" | greenapi | ultramsg | telegram
+        "provider": "",             # "" | greenapi | ultramsg | telegram | webhook (n8n...)
         "instance": "",
         "token": "",
         "to": "",                   # WhatsApp number (07xx... or 9647xx...) or Telegram chat id

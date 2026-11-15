@@ -120,7 +120,7 @@ def test_alert_saved_with_marked_picture(cfg):
     sent = []
 
     class N:
-        def queue_alert(self, kind, text, jpeg):
+        def queue_alert(self, kind, text, jpeg, meta=None):
             sent.append((kind, text, jpeg))
 
     w = CameraWorker(cfg["cameras"][0], cfg, db, notifier=N())
@@ -236,6 +236,33 @@ def test_notify_error_and_kinds(cfg):
     assert n.wants("person:x") and not n.wants("crowding")
     with pytest.raises(RuntimeError, match="401"):
         n.send("x")
+
+
+def test_notify_webhook_n8n(cfg):
+    import json as _json
+    import time as _time
+    from app.notify import Notifier
+    calls = []
+    cfg["site_name"] = "المخزن"
+    cfg["notify"].update(provider="webhook", api_url="", token="s3", to="07701234567", instance="")
+    n = Notifier(cfg, client=_mock(calls))
+    assert not n.enabled
+    cfg["notify"]["api_url"] = "https://n8n.test/webhook/cctv"
+    assert n.enabled and n.wants("crowding")
+    n.queue_alert("person:ab", "شوهد أحمد", b"\xff\xd8jpeg", {"camera_id": 2, "camera": "الباب", "person": "أحمد"})
+    for _ in range(50):
+        if calls:
+            break
+        _time.sleep(0.05)
+    req = calls[0]
+    assert str(req.url) == "https://n8n.test/webhook/cctv" and req.headers["X-CCTV-Token"] == "s3"
+    body = _json.loads(req.content)
+    assert body["message"] == "شوهد أحمد" and body["site"] == "المخزن" and body["kind"] == "person"
+    assert body["camera"] == "الباب" and body["person"] == "أحمد" and body["to"] == "07701234567"
+    assert base64.b64decode(body["image_base64"]) == b"\xff\xd8jpeg" and body["has_image"]
+    n.send("تجربة")
+    body = _json.loads(calls[1].content)
+    assert body["kind"] == "test" and body["image_base64"] is None
 
 
 # ---------- OpenAI assistant ----------
