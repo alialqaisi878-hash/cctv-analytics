@@ -43,6 +43,8 @@ class App:
                     self.workers[cam["id"]] = w
                     w.start()
         threading.Thread(target=self._housekeeping, daemon=True, name="housekeeping").start()
+        self.last_seen = time.time()      # last request from a dashboard (see /api/window/state)
+        self.closed_at = 0.0              # when a dashboard page last said it was being closed
         self.updater = Updater(cfg)
         self.updater.run_background(lambda: in_working_hours(cfg, self.db.local(time.time())))
 
@@ -78,6 +80,12 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
 
     @api.middleware("http")
     async def basic_auth(request: Request, call_next):
+        if request.url.path.startswith("/api/window/"):
+            # used by the desktop launcher on this PC only; not counted as dashboard activity
+            if not (request.client and request.client.host in ("127.0.0.1", "::1")):
+                return Response("local only", 403)
+            return await call_next(request)
+        core.last_seen = time.time()
         password = cfg["server"].get("password") or ""   # read every time: it can be changed in the settings
         if password:
             auth = request.headers.get("authorization", "")
@@ -255,6 +263,18 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         if cam is None:
             raise HTTPException(404, "unknown camera")
         return {"id": cam_id, "name": cam["name"], "lines": cam["lines"]}
+
+    @api.post("/api/window/closed")
+    def window_closed():
+        core.closed_at = time.time()
+        return {"ok": True}
+
+    @api.get("/api/window/state")
+    def window_state():
+        """For the desktop launcher: is a dashboard still open? (It stops the program when none is.)"""
+        now = time.time()
+        closed = core.closed_at >= core.last_seen   # a page said goodbye and nothing was requested since
+        return {"idle": now - core.last_seen, "closed": (now - core.closed_at) if closed else None}
 
     @api.get("/api/settings")
     def get_settings():
