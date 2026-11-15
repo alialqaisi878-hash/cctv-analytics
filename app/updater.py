@@ -70,7 +70,9 @@ class Updater:
         if not self.enabled:
             self.state["error"] = "updates disabled"
             return self.state
-        url = f"https://api.github.com/repos/{self.cfg['repo']}/releases/latest"
+        # CCTV_UPDATE_API points the updater at another server: used by the automated update test
+        api = os.environ.get("CCTV_UPDATE_API") or "https://api.github.com"
+        url = f"{api.rstrip('/')}/repos/{self.cfg['repo']}/releases/latest"
         try:
             with urllib.request.urlopen(self._request(url, "application/vnd.github+json"), timeout=15) as r:
                 rel = json.load(r)
