@@ -51,6 +51,7 @@ class Analyst:
         self.db, self.cfg = db, cfg
         self._client = client  # injectable for tests
         self._openai_http = openai_http
+        self.locations = None   # set by the server: () -> where each enrolled person was last seen
         self._openai_model_cache: str | None = None
 
     @property
@@ -139,6 +140,13 @@ class Analyst:
             return json.dumps(db.attendance(day), ensure_ascii=False)
 
         @beta_tool
+        def get_locations() -> str:
+            """Face recognition (if turned on): where each enrolled employee is now, meaning the camera
+            and floor-plan place that last recognised them, how many minutes ago, their job and ERP number.
+            "present" is true when they were seen recently. Use it for questions like "where is Ahmed?"."""
+            return json.dumps(self.locations() if self.locations else [], ensure_ascii=False)
+
+        @beta_tool
         def get_setup() -> str:
             """Camera, door-line and zone names configured in the system, plus working hours."""
             cams = [{"id": c["id"], "name": c["name"],
@@ -147,7 +155,7 @@ class Analyst:
                     for c in cfg["cameras"]]
             return json.dumps({"cameras": cams, "working_hours": cfg["working_hours"]}, ensure_ascii=False)
 
-        return [get_day_summary, get_hourly, get_daily_trend, get_zone_activity, get_alerts, get_attendance, get_setup]
+        return [get_day_summary, get_hourly, get_daily_trend, get_zone_activity, get_alerts, get_attendance, get_locations, get_setup]
 
     def _openai_tools(self) -> tuple[list[dict], dict]:
         """The same tools in OpenAI's function-calling format, with their Python functions."""

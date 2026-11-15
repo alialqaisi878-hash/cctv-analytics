@@ -23,6 +23,7 @@ from .config import (add_local_camera, apply_settings, in_working_hours, local_c
                      notice_text, public_settings, remove_local_camera, set_camera_lines)
 from .db import Database
 from .faces import FaceEngine, decode_image
+from .floormap import FloorMaps
 from .notify import Notifier
 from .pipeline import CameraWorker
 from .updater import Updater
@@ -41,6 +42,7 @@ class App:
         if cfg["faces"]["enabled"]:
             self.faces.ensure_ready()
         self.notifier = Notifier(cfg)
+        self.maps = FloorMaps(Path(cfg["database"]).parent)
         self.workers: dict[str, CameraWorker] = {}
         if start_cameras:
             for cam in cfg["cameras"]:
@@ -53,7 +55,7 @@ class App:
         self.updater.run_background(lambda: in_working_hours(cfg, self.db.local(time.time())))
 
     def start_worker(self, cam: dict) -> CameraWorker:
-        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier)
+        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps)
         self.workers[cam["id"]] = w
         w.start()
         return w
@@ -186,6 +188,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             if w:
                 w.stop()
             cfg["cameras"][:] = [c for c in cfg["cameras"] if c["id"] != cam_id]
+        core.maps.forget_camera(cam_id)
         return {"ok": True}
 
     @api.get("/frame/{cam_id}")
@@ -286,7 +289,8 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         _need_faces()
         try:
             return core.faces.enroll(str(payload.get("name") or ""), _picture(payload),
-                                     alert_on_seen=bool(payload.get("alert_on_seen")), note=str(payload.get("note") or ""))
+                                     alert_on_seen=bool(payload.get("alert_on_seen")), note=str(payload.get("note") or ""),
+                                     erp_id=str(payload.get("erp_id") or ""), job=str(payload.get("job") or ""))
         except ValueError as e:
             raise HTTPException(400, str(e))
 
@@ -319,6 +323,80 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         if p is None:
             raise HTTPException(404, "no photo")
         return FileResponse(p, media_type="image/jpeg")
+
+    # ---------- floor plans: where each enrolled person was last seen ----------
+    def _locations() -> list[dict]:
+        seen, now = db.last_seen(), time.time()
+        fresh = 60 * cfg["faces"].get("present_minutes", 15)
+        names = {c["id"]: c["name"] for c in cfg["cameras"]}
+        out = []
+        for p in core.faces.public_people():
+            s = seen.get(p["id"])
+            row = {"person_id": p["id"], "name": p["name"], "erp_id": p["erp_id"], "job": p["job"],
+                   "camera_id": None, "camera": None, "location": None, "time": None, "minutes_ago": None,
+                   "present": False}
+            if s:
+                ago = max(0, int((now - s["ts"]) // 60))
+                row.update(camera_id=s["camera_id"], camera=names.get(s["camera_id"], s["camera_id"]),
+                           location=core.maps.where(s["camera_id"]), time=s["time"], minutes_ago=ago,
+                           present=now - s["ts"] <= fresh)
+            out.append(row)
+        return sorted(out, key=lambda r: (not r["present"], r["minutes_ago"] is None, r["minutes_ago"] or 0, r["name"]))
+
+    core.analyst.locations = _locations
+
+    @api.get("/api/locations")
+    def locations(erp_id: str | None = None):
+        """Also meant for the ERP / n8n: GET /api/locations?erp_id=E-102"""
+        rows = _locations()
+        if erp_id:
+            rows = [r for r in rows if r["erp_id"] == erp_id.strip()]
+        return {"present_minutes": cfg["faces"].get("present_minutes", 15), "people": rows}
+
+    @api.get("/api/maps")
+    def maps():
+        return core.maps.public()
+
+    @api.post("/api/maps")
+    def add_map(payload: dict = Body(...)):
+        try:
+            img = decode_image(payload.get("image") or "")
+        except Exception:  # noqa: BLE001  (bad base64 or not a picture)
+            img = None
+        try:
+            return core.maps.add(str(payload.get("name") or ""), img)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @api.patch("/api/maps/{map_id}")
+    def edit_map(map_id: str, payload: dict = Body(...)):
+        try:
+            return core.maps.rename(map_id, str(payload.get("name") or ""))
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+
+    @api.delete("/api/maps/{map_id}")
+    def delete_map(map_id: str):
+        if not core.maps.remove(map_id):
+            raise HTTPException(404, "المخطط غير موجود.")
+        return {"ok": True}
+
+    @api.get("/api/maps/{map_id}/image")
+    def map_image(map_id: str):
+        p = core.maps.image(map_id)
+        if p is None:
+            raise HTTPException(404, "no picture")
+        return FileResponse(p, media_type="image/jpeg")
+
+    @api.put("/api/maps/cameras/{cam_id}")
+    def place_camera(cam_id: str, payload: dict = Body(...)):
+        if not any(c["id"] == cam_id for c in cfg["cameras"]):
+            raise HTTPException(404, "الكاميرا غير موجودة.")
+        try:
+            core.maps.place(cam_id, payload.get("map") or None, payload.get("x", 0.5), payload.get("y", 0.5))
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True}
 
     @api.get("/api/attendance")
     def attendance(day: str | None = None):

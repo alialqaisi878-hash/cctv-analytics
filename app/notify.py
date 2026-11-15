@@ -68,6 +68,17 @@ class Notifier:
         except queue.Full:
             log.warning("notification queue full, dropping: %s", text)
 
+    def queue_location(self, text: str, meta: dict) -> None:
+        """Webhook only (when switched on): an enrolled person showed up on another camera."""
+        n = self.n
+        if not (n.get("provider") == "webhook" and n.get("send_locations") and self.enabled):
+            return
+        meta = dict(meta, kind="location", time=time.strftime("%Y-%m-%d %H:%M:%S"))
+        try:
+            self._q.put_nowait((text, None, meta))
+        except queue.Full:
+            log.warning("notification queue full, dropping location: %s", text)
+
     def _worker(self) -> None:
         while True:
             text, jpeg, meta = self._q.get()
@@ -153,6 +164,7 @@ class Notifier:
         body = {"source": "cctv-analytics", "site": meta.get("site", ""), "kind": meta.get("kind", "test"),
                 "message": text, "time": meta.get("time") or time.strftime("%Y-%m-%d %H:%M:%S"),
                 "camera_id": meta.get("camera_id"), "camera": meta.get("camera"), "person": meta.get("person"),
+                "location": meta.get("location"),
                 "to": n.get("to") or None, "has_image": jpeg is not None,
                 "image_base64": base64.b64encode(jpeg).decode() if jpeg else None,
                 "image_mime": "image/jpeg" if jpeg else None, "image_name": "alert.jpg" if jpeg else None}

@@ -365,3 +365,107 @@ def test_api_alerts_people_and_settings(cfg, tmp_path, engine_models):
     assert r.status_code == 502 and "wrong instance" in r.json()["detail"]
     assert c.post("/api/settings", json={"notify": {"provider": "sms"}}).status_code == 400
     assert c.post("/api/settings", json={"agent": {"provider": "openai", "openai_model": "gpt-5"}}).status_code == 200
+
+
+# ---------- floor map: where each employee is ----------
+def test_floor_maps_and_places(tmp_path):
+    from app.floormap import FloorMaps
+    fm = FloorMaps(tmp_path / "بيانات")
+    with pytest.raises(ValueError):
+        fm.add("x", None)
+    m = fm.add("الطابق الأرضي", np.full((3000, 1500, 3), 200, np.uint8))
+    assert (m["w"], m["h"]) == (1200, 2400) and fm.image(m["id"]).exists()
+    fm.place("cam1", m["id"], 1.7, 0.25)
+    assert fm.where("cam1") == {"map_id": m["id"], "map": "الطابق الأرضي", "x": 1.0, "y": 0.25}
+    with pytest.raises(ValueError):
+        fm.place("cam1", "nope")
+    again = FloorMaps(tmp_path / "بيانات")          # kept on disk
+    assert again.where("cam1")["map"] == "الطابق الأرضي"
+    fm.place("cam1", None)
+    assert fm.where("cam1") is None
+    fm.place("cam2", m["id"], 0.5, 0.5)
+    assert fm.remove(m["id"]) and fm.where("cam2") is None and fm.image(m["id"]) is None
+
+
+def test_location_sent_to_webhook_when_person_moves(cfg, tmp_path, engine_models):
+    import json as _json
+    from app.db import Database
+    from app.floormap import FloorMaps
+    from app.notify import Notifier
+    from app.pipeline import CameraWorker
+    e = _engine(tmp_path, engine_models)
+    lena = cv2.imread(str(_download("lena.jpg")))
+    p = e.enroll("Lena", lena, erp_id="E-7", job="محاسبة")
+    cfg["faces"]["enabled"] = True
+    cfg["alerts"]["after_hours_presence"] = False
+    cfg["notify"].update(provider="webhook", api_url="https://n8n.test/webhook/cctv", send_locations=True)
+    db = Database(cfg["database"], cfg["timezone"])
+    fm = FloorMaps(tmp_path / "data")
+    m = fm.add("المكتب", np.zeros((400, 600, 3), np.uint8))
+    fm.place(cfg["cameras"][0]["id"], m["id"], 0.3, 0.6)
+    calls = []
+    n = Notifier(cfg, client=_mock(calls))
+    frame = np.zeros((720, 1280, 3), np.uint8)
+    frame[60:300, 500:740] = cv2.resize(lena, (240, 240))
+
+    class Still:
+        def track(self, frame, **kw):
+            from tests.test_integration import _Res
+            return [_Res([[460, 40, 780, 700]], [3])]
+
+    w = CameraWorker(cfg["cameras"][0], cfg, db, faces=e, notifier=n, maps=fm)
+    w._model = Still()
+    t0 = time.time()
+    w._process(frame.copy(), t0)
+    for _ in range(60):
+        if calls:
+            break
+        time.sleep(0.05)
+    body = _json.loads(calls[0].content)
+    assert body["kind"] == "location" and body["person"]["erp_id"] == "E-7" and body["person"]["job"] == "محاسبة"
+    assert body["location"]["map"] == "المكتب" and body["location"]["x"] == 0.3 and body["image_base64"] is None
+    # staying in view keeps the place fresh, without sending again
+    w._process(frame.copy(), t0 + 61)
+    rows = db._query("SELECT COUNT(*) n FROM sightings WHERE person_id=?", (p["id"],))
+    assert rows[0]["n"] == 2
+    time.sleep(0.2)
+    assert len(calls) == 1
+
+
+def test_api_map_and_locations(cfg, tmp_path, engine_models):
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    shutil.copytree(engine_models, tmp_path / "data" / "models", dirs_exist_ok=True)
+    cfg["faces"]["enabled"] = True
+    api = create_app(cfg, start_cameras=False)
+    core = api.state.core
+    for _ in range(100):
+        if core.faces.ready:
+            break
+        time.sleep(0.1)
+    c = TestClient(api)
+    cam = cfg["cameras"][0]["id"]
+    _, png = cv2.imencode(".png", np.full((300, 500, 3), 90, np.uint8))
+    assert c.post("/api/maps", json={"name": "x", "image": "data:image/png;base64,AAAA"}).status_code == 400
+    m = c.post("/api/maps", json={"name": "الطابق الأول", "image": "data:image/png;base64," + base64.b64encode(png).decode()}).json()
+    assert c.get(f"/api/maps/{m['id']}/image").headers["content-type"] == "image/jpeg"
+    assert c.put(f"/api/maps/cameras/{cam}", json={"map": m["id"], "x": 0.2, "y": 0.8}).status_code == 200
+    assert c.put("/api/maps/cameras/nocam", json={"map": m["id"]}).status_code == 404
+    assert c.get("/api/maps").json()["cams"][cam] == {"map": m["id"], "x": 0.2, "y": 0.8}
+
+    jpg = base64.b64encode(_download("lena.jpg").read_bytes()).decode()
+    pid = c.post("/api/people", json={"name": "Lena", "image": "data:image/jpeg;base64," + jpg,
+                                      "job": "استقبال", "erp_id": "E-1"}).json()["id"]
+    loc = c.get("/api/locations").json()["people"]
+    assert loc[0]["camera"] is None and loc[0]["present"] is False
+    core.db.add_sighting(time.time() - 120, cam, pid, "Lena", 0.8)
+    loc = c.get("/api/locations?erp_id=E-1").json()["people"]
+    assert loc[0]["present"] and loc[0]["minutes_ago"] == 2 and loc[0]["location"]["map"] == "الطابق الأول"
+    assert loc[0]["job"] == "استقبال"
+    assert c.get("/api/locations?erp_id=nobody").json()["people"] == []
+    assert c.patch(f"/api/people/{pid}", json={"erp_id": "E-9", "job": "مدير"}).status_code == 200
+    assert c.get("/api/people").json()["people"][0]["erp_id"] == "E-9"
+    assert json.loads(core.analyst.locations and json.dumps(core.analyst.locations()))[0]["erp_id"] == "E-9"
+    assert c.post("/api/settings", json={"notify": {"send_locations": True}, "faces": {"present_minutes": 30}}).status_code == 200
+    assert c.delete(f"/api/maps/{m['id']}").status_code == 200
+    assert c.get("/api/locations").json()["people"][0]["location"] is None

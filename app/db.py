@@ -146,9 +146,14 @@ class Database:
         return rows
 
     def last_seen(self) -> dict[str, dict]:
+        """Where and when each enrolled person was last recognised (the row with the newest time)."""
         rows = self._query("SELECT person_id, MAX(ts) ts, camera_id FROM sightings GROUP BY person_id")
-        return {r["person_id"]: {"time": self.local(r["ts"]).strftime("%Y-%m-%d %H:%M"), "camera_id": r["camera_id"]}
-                for r in rows}
+        return {r["person_id"]: {"time": self.local(r["ts"]).strftime("%Y-%m-%d %H:%M"), "ts": r["ts"],
+                                 "camera_id": r["camera_id"]} for r in rows}
+
+    def last_sighting(self, person_id: str) -> dict | None:
+        rows = self._query("SELECT camera_id, ts FROM sightings WHERE person_id=? ORDER BY ts DESC LIMIT 1", (person_id,))
+        return rows[0] if rows else None
 
     def forget_person(self, person_id: str) -> None:
         self._exec("DELETE FROM sightings WHERE person_id=?", (person_id,))

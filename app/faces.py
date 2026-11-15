@@ -185,7 +185,7 @@ class FaceEngine:
     def public_people(self) -> list[dict]:
         return [{"id": p["id"], "name": p["name"], "photos": len(p.get("embeddings", [])),
                  "alert_on_seen": p.get("alert_on_seen", False), "note": p.get("note", ""),
-                 "added": p.get("added")} for p in self.people]
+                 "erp_id": p.get("erp_id", ""), "job": p.get("job", ""), "added": p.get("added")} for p in self.people]
 
     def person(self, pid: str) -> dict | None:
         return next((p for p in self.people if p["id"] == pid), None)
@@ -197,7 +197,7 @@ class FaceEngine:
         return max(faces, key=lambda f: (f["box"][2] - f["box"][0]) * (f["box"][3] - f["box"][1]))
 
     def enroll(self, name: str, img: np.ndarray, person_id: str | None = None, alert_on_seen: bool = False,
-               note: str = "") -> dict:
+               note: str = "", erp_id: str = "", job: str = "") -> dict:
         """Add a person (or one more photo of an existing person). Raises ValueError with an Arabic message."""
         if not self.ready:
             raise ValueError("التعرف على الوجه غير جاهز بعد. فعّله من الإعدادات وانتظر دقيقة.")
@@ -214,7 +214,8 @@ class FaceEngine:
                 if not name:
                     raise ValueError("اكتب الاسم.")
                 p = {"id": uuid.uuid4().hex[:10], "name": name, "embeddings": [], "alert_on_seen": bool(alert_on_seen),
-                     "note": note.strip()[:120], "added": time.strftime("%Y-%m-%d")}
+                     "note": note.strip()[:120], "erp_id": str(erp_id or "").strip()[:40],
+                     "job": str(job or "").strip()[:80], "added": time.strftime("%Y-%m-%d")}
                 self.people.append(p)
             p["embeddings"].append([round(float(v), 5) for v in face["feature"]])
             self._save_thumb(p["id"], img, face["box"], first=len(p["embeddings"]) == 1)
@@ -251,6 +252,10 @@ class FaceEngine:
                 p["alert_on_seen"] = bool(changes["alert_on_seen"])
             if "note" in changes:
                 p["note"] = str(changes["note"]).strip()[:120]
+            if "erp_id" in changes:     # the employee's number in the company's ERP, used to match records
+                p["erp_id"] = str(changes["erp_id"] or "").strip()[:40]
+            if "job" in changes:
+                p["job"] = str(changes["job"] or "").strip()[:80]
             self._save_people()
         return p
 

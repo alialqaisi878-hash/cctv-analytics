@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
         "enabled": False,           # recognise the people enrolled on the "الأشخاص" page
         "threshold": 0.40,          # similarity needed to call it a match (higher = stricter)
         "interval_s": 0.5,          # seconds between face checks per camera
+        "present_minutes": 15,      # on the map, someone seen within this many minutes counts as "here now"
     },
     "working_hours": {
         "start": "08:00",
@@ -53,6 +54,7 @@ DEFAULTS: dict[str, Any] = {
         "api_url": "",              # only if the provider gave a special address
         "send_images": True,
         "kinds": [],                # [] = every alert; or e.g. ["after_hours", "person"]
+        "send_locations": False,    # webhook only: also send an event when an enrolled person shows up on another camera
     },
     "agent": {
         "model": "claude-opus-5-5",
@@ -260,9 +262,9 @@ EDITABLE = {
                "camera_offline": bool, "unknown_after_hours": bool},
     "agent": {"daily_report_time": _time, "api_key": _text(300), "provider": _choice("auto", "claude", "openai"),
               "openai_model": _text(60)},
-    "faces": {"enabled": bool, "threshold": _float(0.25, 0.8)},
+    "faces": {"enabled": bool, "threshold": _float(0.25, 0.8), "present_minutes": _int(1, 720)},
     "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
-               "api_url": _text(200), "send_images": bool, "kinds": _kinds},
+               "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},
     "server": {"password": _text(100)},
     "detector": {"process_fps": _int(1, 30), "confidence": _float(0.05, 0.95)},
     "updates": {"auto_install": bool},

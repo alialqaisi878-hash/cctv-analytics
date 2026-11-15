@@ -21,10 +21,10 @@ PERSON = 0  # COCO class id
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None):
+    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None, maps=None):
         super().__init__(daemon=True, name=f"cam-{cam['id']}")
         self.cam, self.cfg, self.db = cam, cfg, db
-        self.faces, self.notifier = faces, notifier     # FaceEngine / Notifier, both optional
+        self.faces, self.notifier, self.maps = faces, notifier, maps    # FaceEngine / Notifier / FloorMaps, optional
         self.id = cam["id"]
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -44,6 +44,7 @@ class CameraWorker(threading.Thread):
         self._last_face = 0.0
         self.names: dict[int, dict] = {}        # track id -> recognised person (or unknown) for the live view
         self._unknown_seen: dict[int, int] = {}
+        self._still_here: dict[str, float] = {}   # person id -> last time a sighting was written for this camera
         self._offline_since: float | None = None
         self._was_online = False
 
@@ -211,6 +212,13 @@ class CameraWorker(threading.Thread):
             if tid not in alive:
                 self.names.pop(tid, None)
                 self._unknown_seen.pop(tid, None)
+        # people who stay in view keep their place on the map fresh (one row a minute, no new face check)
+        for tid in alive:
+            n = self.names.get(tid) or {}
+            pid = n.get("person_id")
+            if pid and ts - self._still_here.get(pid, ts) >= 60:
+                self._still_here[pid] = ts
+                self.db.add_sighting(ts, self.id, pid, n["name"], n.get("score", 0.0))
         fc = self.cfg["faces"]
         if not (fc["enabled"] and self.faces and self.faces.ready and tracks):
             return
@@ -237,11 +245,25 @@ class CameraWorker(threading.Thread):
                 continue
             if self.names.get(tid, {}).get("person_id") == p["id"]:
                 continue
-            self.names[tid] = {"person_id": p["id"], "name": p["name"]}
+            self.names[tid] = {"person_id": p["id"], "name": p["name"], "score": f["score"]}
+            last = self.db.last_sighting(p["id"])     # a new place, or back after being away, is worth telling
+            moved = (not last or last["camera_id"] != self.id
+                     or ts - last["ts"] > 60 * self.cfg["faces"].get("present_minutes", 15))
             self.db.add_sighting(ts, self.id, p["id"], p["name"], f["score"])
+            self._still_here[p["id"]] = ts
+            if moved and self.notifier:
+                self.notifier.queue_location(f"{p['name']} انشاف في {self.cam['name']}", self._meta(p["id"]))
             log.info("recognised %s on %s (%.2f)", p["name"], self.id, f["score"])
             if p.get("alert_on_seen"):
                 self._queue_alert(ts, f"person:{p['id']}", f"تم رصد {p['name']} في {self.cam['name']}", p["id"])
+
+    def _meta(self, pid: str | None) -> dict:
+        """What a webhook (n8n / ERP) gets besides the text: the camera, its place on the map and the person."""
+        person = self.faces.person(pid) if (pid and self.faces) else None
+        return {"camera_id": self.id, "camera": self.cam["name"],
+                "location": self.maps.where(self.id) if self.maps else None,
+                "person": {"id": pid, "name": person["name"], "erp_id": person.get("erp_id", ""),
+                           "job": person.get("job", "")} if person else None}
 
     def _unknown_alert(self, ts: float) -> None:
         if self.cfg["alerts"].get("unknown_after_hours") and not self._in_working_hours(ts):
@@ -264,10 +286,7 @@ class CameraWorker(threading.Thread):
             log.info("ALERT %s %s: %s", self.id, kind, msg)
             if self.notifier:
                 t = self.db.local(ts).strftime("%H:%M")
-                person = self.faces.person(pid) if (pid and self.faces) else None
-                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg(),
-                                          {"camera_id": self.id, "camera": self.cam["name"],
-                                           "person": {"id": pid, "name": person["name"]} if person else None})
+                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg(), self._meta(pid))
         self._pending.clear()
 
     def _check_alerts(self, ts: float):
