@@ -512,6 +512,58 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     def make_report(payload: dict = Body(default={})):
         return {"report": core.analyst.daily_report(payload.get("day") or None)}
 
+    @api.get("/api/diagnostics")
+    def diagnostics(download: int = 0):
+        """What the program is doing right now plus the end of its log, as text the owner can copy or send.
+        Nothing secret in it: camera addresses, passwords and keys are left out or masked."""
+        import platform
+        import re
+        lines = [f"CCTV Analytics {__version__}  {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                 f"system: {platform.platform()}  python {platform.python_version()}"]
+        libs = []
+        for name in ("ultralytics", "torch", "cv2", "numpy"):
+            try:
+                libs.append(f"{name} {__import__(name).__version__}")
+            except Exception as e:  # noqa: BLE001
+                libs.append(f"{name} ?({type(e).__name__})")
+        det, al, wh = cfg["detector"], cfg["alerts"], cfg["working_hours"]
+        now = db.local(time.time())
+        lines += ["libraries: " + ", ".join(libs),
+                  f"detector: model {det['model']}, confidence {det['confidence']}, {det['process_fps']}/s, "
+                  f"imgsz {det['imgsz']}, device {det.get('device')}, stream {det.get('stream')}",
+                  f"time here: {now.strftime('%a %H:%M')} ({cfg['timezone']}), working hours {wh['start']}-{wh['end']} "
+                  f"days {wh['days']}, inside working hours now: {in_working_hours(cfg, now)}",
+                  f"alerts: after-hours {al['after_hours_presence']}, crowd limit {al['max_occupancy']}, "
+                  f"cooldown {al['cooldown_minutes']} min, unseen {db.unseen_count()}",
+                  f"faces: enabled {cfg['faces']['enabled']}, {core.faces.status}, people {len(core.faces.people)}",
+                  f"sending: {cfg['notify'].get('provider') or 'off'}, ready {core.notifier.enabled}, "
+                  f"sent {core.notifier.sent}, last error: {core.notifier.last_error or '-'}", "", "cameras:"]
+        for cam in list(cfg["cameras"]):
+            w = core.workers.get(cam["id"])
+            if not w:
+                lines.append(f"  {cam['name']}: disabled")
+                continue
+            sn = w.snapshot()
+            lines.append(f"  {sn['name']}: {sn['status']}, thread alive {w.is_alive()}, {sn['stream'] or '-'} {sn['size'] or '-'}, "
+                         f"reading {sn['read_fps']}/s, analysing {sn['fps']}/s, last analysis {sn['analysed_ago']} s ago, "
+                         f"people {sn['people_now']}, detector's best guess {sn['best_conf']}, errors {w.errors}"
+                         + (f", last error: {sn['error']}" if sn["error"] else ""))
+        lines += ["", "log (latest lines):"]
+        log_path = Path(cfg["database"]).parent / "app.log"
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(max(log_path.stat().st_size - 200_000, 0))
+                tail = f.read().decode("utf-8", "replace").splitlines()[-600:]
+        except OSError:
+            tail = ["(no log file: the program was not started from its desktop window)"]
+        text = "\n".join(lines + tail)
+        text = re.sub(r"://[^/@\s]+@", "://***@", text)                           # camera user:password
+        text = re.sub(r"\b(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+", r"\1***", text)     # API keys
+        headers = {"Cache-Control": "no-store"}
+        if download:
+            headers["Content-Disposition"] = 'attachment; filename="cctv-diagnostics.txt"'
+        return PlainTextResponse(text, headers=headers)
+
     @api.get("/api/update")
     def update_status():
         return core.updater.state
