@@ -602,3 +602,21 @@ def test_things_that_are_not_people_are_ignored(cfg):
         w._process(frame, time.time())
         assert w.people_now == (1 if i == CONFIRM_HITS - 1 else 0)
     assert [t[0] for t in w._tracks] == [3]
+
+
+def test_api_key_typed_in_the_model_box_is_moved_to_the_key(cfg):
+    from app.config import apply_settings, load_config
+    key = "sk-proj-" + "x" * 150
+    apply_settings(cfg, {"agent": {"openai_model": key}})
+    assert cfg["agent"]["openai_model"] == "" and cfg["agent"]["api_key"] == key
+    # a key already given in its own box wins; the model box is just cleared
+    apply_settings(cfg, {"agent": {"openai_model": "sk-other", "api_key": "sk-proj-right"}})
+    assert cfg["agent"]["openai_model"] == "" and cfg["agent"]["api_key"] == "sk-proj-right"
+    # an old install that already saved a key there is cleaned when it starts
+    import shutil as _sh
+    import yaml
+    d = Path(cfg["_settings_file"]).parent.parent / "inst"
+    (d / "data").mkdir(parents=True)
+    _sh.copy("tests/demo-config.yaml", d / "config.yaml")
+    (d / "data" / "settings.yaml").write_text(yaml.safe_dump({"agent": {"openai_model": "sk-proj-abc"}}), encoding="utf-8")
+    assert load_config(d / "config.yaml")["agent"]["openai_model"] == ""

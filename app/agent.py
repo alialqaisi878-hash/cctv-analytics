@@ -223,7 +223,7 @@ class Analyst:
 
     def _openai_model(self, http: httpx.Client) -> str:
         chosen = (self.cfg["agent"].get("openai_model") or "").strip()
-        if chosen:
+        if chosen and not chosen.startswith("sk-"):     # a key typed in the model box is not a model
             return chosen
         if self._openai_model_cache:
             return self._openai_model_cache

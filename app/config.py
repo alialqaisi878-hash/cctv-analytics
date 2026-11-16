@@ -94,6 +94,8 @@ def load_config(path: str | Path) -> dict:
     # settings changed in the program live in their own file, so config.yaml keeps its comments
     cfg["_settings_file"] = str(path.parent / "data" / "settings.yaml")
     cfg = _merge(cfg, read_settings(cfg["_settings_file"]))
+    if str(cfg["agent"].get("openai_model") or "").startswith("sk-"):   # a key saved in the model box by mistake
+        cfg["agent"]["openai_model"] = ""
     if cfg["detector"].get("confidence") == 0.35:   # the old default marked things that are not people
         cfg["detector"]["confidence"] = 0.5
     if not cfg["demo"]:   # the sample video of early versions is no longer shown
@@ -301,6 +303,13 @@ def clean_settings(changes: dict) -> dict:
                 out[key] = value
             else:
                 out.setdefault(section, {})[key] = value
+    # an API key pasted into the model box: use it as the key, and let the model be chosen automatically
+    agent = out.get("agent") or {}
+    if str(agent.get("openai_model", "")).startswith("sk-"):
+        raw = str(changes["agent"]["openai_model"]).strip()
+        agent["openai_model"] = ""
+        if not agent.get("api_key"):
+            agent["api_key"] = EDITABLE["agent"]["api_key"](raw)
     return out
 
 
