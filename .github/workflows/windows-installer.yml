@@ -101,7 +101,9 @@ jobs:
       - name: Start the app and check it analyses the sample video
         shell: pwsh
         env:
-          CCTV_WINDOW_IDLE_S: "25"
+          # 1 second: page activity alone would stop the program at once. It must keep running anyway,
+          # because a minimised window's page can be frozen by the browser for minutes.
+          CCTV_WINDOW_IDLE_S: "1"
         run: |
           $dir = $env:CCTV_DIR
           # use the sample-video configuration for the smoke test (the real default has no cameras)
@@ -166,6 +168,7 @@ jobs:
           }
           Get-Content "$dir\data\app.log" -Tail 15
           if (-not $stopped) { Write-Error "program kept running after its window was closed"; exit 1 }
+          if (-not (Select-String -Path "$dir\data\app.log" -Pattern "launcher app window (closed|said goodbye)" -Quiet)) { Write-Error "the program did not stop because of the window"; exit 1 }
           if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
 
       - name: Online update while the program is running

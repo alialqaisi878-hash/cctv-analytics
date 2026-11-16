@@ -46,16 +46,39 @@ def _find_app_browser() -> str | None:
     return shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
 
 
-def _open_app_window(url: str) -> None:
-    """Open the dashboard in its own window (Edge/Chrome app mode), or in the default browser."""
+WINDOW_PROFILE = ROOT / "data" / "window"
+
+
+def _open_app_window(url: str) -> bool:
+    """Open the dashboard in its own window (Edge/Chrome app mode), or in the default browser.
+    Returns True when it is our own app window (with its own browser profile)."""
     exe = _find_app_browser()
     if not exe:
         webbrowser.open(url)
-        return
-    profile = ROOT / "data" / "window"   # own profile: no tabs, extensions or sign-in prompts of the user's browser
+        return False
+    profile = WINDOW_PROFILE   # own profile: no tabs, extensions or sign-in prompts of the user's browser
     profile.mkdir(parents=True, exist_ok=True)
     subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run",
                       "--no-default-browser-check", "--window-size=1400,900"])
+    return True
+
+
+def _window_profile_open() -> bool | None:
+    """Is the app window's browser still running? Edge/Chrome keep a "lockfile" in their profile
+    folder, locked for as long as they run (Windows only). None = cannot tell here.
+    This does not depend on the page, which the browser may freeze while the window is minimised."""
+    if os.name != "nt":
+        return None
+    lock = WINDOW_PROFILE / "lockfile"
+    if not lock.exists():
+        return False
+    try:
+        with open(lock, "ab"):
+            return False          # left over from a browser that is gone
+    except PermissionError:
+        return True
+    except OSError:
+        return None
 
 
 def _window_state(url: str) -> dict | None:
@@ -109,7 +132,15 @@ def run_windowed(config: str, port: int, url: str) -> int:
             _message_box(f"CCTV Analytics could not start.\nDetails: {log_path}")
             return 1
         time.sleep(0.3)
-    _open_app_window(url)
+    own_window = _open_app_window(url)
+
+    def note(msg: str) -> None:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " launcher " + msg + "\n")
+        except OSError:
+            pass
+
     # The program stops when its window is closed. The window's process cannot be trusted for that
     # (the browser may hand the window to another process and exit at once), so the page itself is
     # watched: it says goodbye when it closes, and it asks for data every few seconds while open.
@@ -117,6 +148,7 @@ def run_windowed(config: str, port: int, url: str) -> int:
     url_local = f"http://127.0.0.1:{port}"
     grace_until = time.time() + 30
     last_tick = time.time()
+    profile_seen = False      # the window's browser profile was seen in use: trust it, not page activity
     try:
         while True:
             time.sleep(1)
@@ -131,13 +163,21 @@ def run_windowed(config: str, port: int, url: str) -> int:
             if rc is not None:
                 _message_box(f"CCTV Analytics stopped unexpectedly.\nDetails: {log_path}")
                 return 1
+            open_now = _window_profile_open() if own_window else None
+            if open_now:
+                profile_seen = True
+            if profile_seen and open_now is False and now >= grace_until:
+                note("app window closed: stopping")
+                return 0                      # the window's browser has exited (closed or killed)
             st = _window_state(url_local)
             if st is None:
                 continue
             if st["closed"] is not None and st["closed"] > 4:
+                note("app window said goodbye: stopping")
                 return 0                      # window closed by the user
-            if st["idle"] > idle_limit and now >= grace_until:
-                return 0                      # window gone without a goodbye
+            if not profile_seen and st["idle"] > idle_limit and now >= grace_until:
+                note(f"no page activity for {int(st['idle'])}s: stopping")
+                return 0                      # window gone without a goodbye (only when the browser cannot be watched)
     finally:
         if server.poll() is None:
             server.kill()
