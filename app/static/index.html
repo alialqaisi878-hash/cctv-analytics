@@ -87,6 +87,34 @@
   #toast { position:fixed; bottom:22px; inset-inline-start:50%; transform:translateX(50%); background:#1f2c3a; border:1px solid var(--line); padding:10px 18px; border-radius:10px; opacity:0; pointer-events:none; transition:opacity .2s; z-index:50; }
   #toast.on { opacity:1; }
   #print-area { display:none; }
+  .badge { margin-inline-start:auto; background:var(--warn); color:#fff; border-radius:99px; font-size:11px; font-weight:700; padding:1px 7px; min-width:20px; text-align:center; }
+  tr.click { cursor:pointer; } tr.click:hover td { background:var(--card2); } tr.unseen td:first-child { box-shadow:inset -3px 0 0 var(--warn); }
+  .thumb { width:64px; height:40px; object-fit:cover; border-radius:6px; background:#000; display:block; }
+  .kind { font-size:12px; border-radius:99px; padding:2px 9px; background:#222c38; color:var(--muted); white-space:nowrap; }
+  .kind.after_hours { background:rgba(239,100,97,.14); color:var(--warn); } .kind.crowding { background:rgba(240,168,64,.14); color:var(--out); }
+  .kind.person { background:rgba(91,156,245,.15); color:#8fb8f8; } .kind.offline { background:#2a2f36; color:#c9d1d9; } .kind.unknown { background:rgba(180,140,242,.15); color:#c8a9f5; }
+  .bigpic { width:100%; border-radius:10px; background:#000; display:block; max-height:65vh; object-fit:contain; }
+  #popup { position:fixed; bottom:20px; inset-inline-end:20px; width:330px; background:var(--card); border:1px solid var(--warn); border-radius:14px; box-shadow:0 10px 40px rgba(0,0,0,.5); z-index:60; cursor:pointer; overflow:hidden; }
+  #popup img { width:100%; display:block; max-height:180px; object-fit:cover; } #popup .t { padding:10px 12px; } #popup .x { position:absolute; top:6px; inset-inline-start:8px; background:rgba(0,0,0,.6); color:#fff; border:0; border-radius:8px; cursor:pointer; padding:2px 8px; }
+  .people { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; }
+  .person { background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:12px; display:grid; gap:8px; justify-items:center; text-align:center; }
+  .person img, .person .ph { width:96px; height:96px; border-radius:50%; object-fit:cover; background:#000; display:grid; place-items:center; color:var(--muted); }
+  .person .acts { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; }
+  .seg { display:flex; gap:6px; margin-bottom:12px; } .seg button.on { background:rgba(47,195,176,.16); color:var(--accent); border-color:var(--accent); }
+  .mapwrap { position:relative; line-height:0; background:#0a0f14; border-radius:10px; overflow:hidden; user-select:none; }
+  .mapwrap img { width:100%; height:auto; display:block; }
+  .mapwrap.edit { cursor:crosshair; outline:2px dashed var(--accent); outline-offset:-2px; }
+  .mcam { position:absolute; width:26px; height:26px; transform:translate(-50%,-50%); line-height:1.25; z-index:1; }
+  .mcam .dot { width:26px; height:26px; border-radius:50%; background:#1c8fd6; border:2px solid #fff; display:grid; place-items:center; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.5); }
+  .mcam .dot svg { width:14px; height:14px; }
+  .mcam .cn { position:absolute; top:calc(100% + 3px); left:50%; transform:translateX(-50%); background:rgba(10,15,20,.82); color:#cfe0f8; font-size:11px; padding:1px 6px; border-radius:6px; white-space:nowrap; }
+  .mapwrap.edit .mcam { cursor:grab; } .mapwrap.edit .mcam .dot { background:var(--out); }
+  .who { position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%); display:flex; flex-direction:column-reverse; gap:3px; align-items:center; }
+  .who span { background:var(--accent); color:var(--accent-ink); font-size:12px; font-weight:700; padding:2px 8px; border-radius:99px; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,.4); cursor:pointer; }
+  .who span.old { background:#3a4654; color:#c9d1d9; font-weight:600; }
+  .who span.hl { outline:3px solid #fff; }
+  .mapgrid { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(280px,1fr); gap:18px; align-items:start; }
+  @media (max-width:1100px) { .mapgrid { grid-template-columns:1fr; } }
   @media print {
     body { background:#fff; color:#000; } .app { display:none; } #print-area { display:block; padding:20px; line-height:1.9; }
     #print-area h3 { font-size:18px; }
@@ -103,6 +131,9 @@
     <nav>
       <button data-view="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>الرئيسية</span></button>
       <button data-view="cameras"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l12-3 2 7-12 3z"/><path d="M17 8l4 1-1 4-3-1"/><path d="M7 14v5h5"/></svg><span>الكاميرات</span></button>
+      <button data-view="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg><span>التنبيهات</span><b class="badge" id="badge" hidden></b></button>
+      <button data-view="people"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0112 0v1"/><path d="M16 4a4 4 0 010 8M22 21v-1a6 6 0 00-4-5.6"/></svg><span>الأشخاص</span></button>
+      <button data-view="map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>الخريطة</span></button>
       <button data-view="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h7M9 17h7"/></svg><span>التقارير</span></button>
       <button data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>الإعدادات</span></button>
     </nav>
@@ -133,7 +164,7 @@
         <div class="card"><h2>آخر 7 أيام</h2><canvas class="chart" id="trend"></canvas></div>
       </div>
       <div class="grid2">
-        <div class="card"><h2>التنبيهات</h2><table><tbody id="alerts"></tbody></table></div>
+        <div class="card"><h2>التنبيهات <button class="btn ghost small" data-goto="alerts">عرض الكل</button></h2><table><tbody id="alerts"></tbody></table></div>
         <div class="card"><h2>المناطق ومدة البقاء</h2><table><thead><tr><th>المنطقة</th><th>زيارات</th><th>متوسط البقاء</th><th>أطول بقاء</th></tr></thead><tbody id="zones"></tbody></table></div>
       </div>
     </section>
@@ -150,6 +181,50 @@
         <div class="muted" style="margin-top:10px">ما لگيت كاميرتك؟ تگدر تحدد الشبكة: <input type="text" id="subnet" class="ltr" placeholder="192.168.1.0/24" style="width:170px;padding:5px 8px"></div>
       </div>
       <div class="card"><h2>الكاميرات المضافة</h2><div class="cams" id="cam-list"></div></div>
+    </section>
+
+    <!-- ===== التنبيهات ===== -->
+    <section class="view" id="v-alerts">
+      <div class="top">
+        <div><h1>التنبيهات</h1><div class="sub">اضغط على أي تنبيه حتى تشوف صورته</div></div>
+        <div class="tools"><label class="muted" for="al-day">اليوم</label><input type="date" id="al-day">
+          <select id="al-kind"><option value="">كل الأنواع</option><option value="after_hours">خارج الدوام</option><option value="crowding">ازدحام</option><option value="person">شخص مسجّل</option><option value="unknown">شخص غير معروف</option><option value="offline">كاميرا مفصولة</option></select>
+          <button class="btn ghost" id="al-all">عرض كل الأيام</button><button class="btn" id="al-seen">علّم الكل مقروء</button></div>
+      </div>
+      <div class="card"><table><thead><tr><th style="width:80px"></th><th>الوقت</th><th>النوع</th><th>التفاصيل</th><th>الكاميرا</th></tr></thead><tbody id="al-list"></tbody></table></div>
+    </section>
+
+    <!-- ===== الأشخاص ===== -->
+    <section class="view" id="v-people">
+      <div class="top">
+        <div><h1>الأشخاص</h1><div class="sub">التعرف على وجوه الأشخاص اللي تسجلهم هنا فقط</div></div>
+        <div class="tools"><button class="btn" id="p-add">إضافة شخص</button></div>
+      </div>
+      <div class="banner notice" id="p-state" style="margin:0" hidden></div>
+      <div class="card"><h2>المسجّلين <span class="muted" id="p-count"></span></h2><div class="people" id="p-list"></div></div>
+      <div class="card"><h2>الحضور <span class="tools"><input type="date" id="att-day"></span></h2>
+        <table><thead><tr><th>الاسم</th><th>أول ظهور</th><th>آخر ظهور</th><th>الكاميرات</th></tr></thead><tbody id="att"></tbody></table>
+        <div class="muted" style="margin-top:8px">ينحسب الشخص حاضر إذا ظهر وجهه بوضوح لكاميرا. إذا ما واجه أي كاميرا ممكن ما ينحسب.</div></div>
+    </section>
+
+    <!-- ===== الخريطة ===== -->
+    <section class="view" id="v-map">
+      <div class="top">
+        <div><h1>الخريطة</h1><div class="sub">وين آخر مرة انشاف كل موظف، حسب الكاميرا اللي تعرفت عليه</div></div>
+        <div class="tools"><button class="btn ghost" id="m-edit" hidden>ترتيب الكاميرات</button><button class="btn ghost" id="m-del" hidden>حذف المخطط</button><button class="btn" id="m-add">إضافة مخطط</button></div>
+      </div>
+      <div class="banner notice" id="m-state" style="margin:0" hidden></div>
+      <div class="mapgrid">
+        <div class="card">
+          <div class="seg" id="m-tabs"></div>
+          <div id="m-editbar" class="banner update" hidden><span>اختر كاميرا واضغط على مكانها بالمخطط. تگدر تسحب الكاميرات لتعديل مكانها.</span><span class="tools"><select id="m-cam"></select><button class="btn small ghost" id="m-unplace">شيلها من المخطط</button><button class="btn small" id="m-done">تم</button></span></div>
+          <div class="mapwrap" id="m-wrap" hidden><img id="m-img" alt="مخطط المكان"><div id="m-layer"></div></div>
+          <div class="empty" id="m-empty"><b>ماكو مخطط بعد</b><span>ارفع صورة مخطط المكان (رسمة، صورة للمخطط، أو لقطة شاشة) وحط كل كاميرا بمكانها. بعدها كل موظف يتعرف عليه النظام يطلع بمكانه.</span><button class="btn" data-mapadd>إضافة مخطط</button></div>
+        </div>
+        <div class="card"><h2>الموظفين <span class="muted" id="m-count"></span></h2>
+          <table><thead><tr><th>الاسم</th><th>المكان</th><th>آخر ظهور</th></tr></thead><tbody id="m-people"></tbody></table>
+          <div class="muted" style="margin-top:8px" id="m-note"></div></div>
+      </div>
     </section>
 
     <!-- ===== التقارير ===== -->
@@ -192,15 +267,36 @@
           <div class="field"><label for="s-after">تنبيه عند وجود أشخاص خارج الدوام</label><input type="checkbox" id="s-after"></div>
           <div class="field"><label for="s-max">حد الازدحام<small>ينبّه إذا زاد عدد الظاهرين بالكاميرا. 0 = بدون</small></label><input type="number" id="s-max" min="0" max="1000"></div>
           <div class="field"><label for="s-cool">أقل مدة بين تنبيهين (دقيقة)</label><input type="number" id="s-cool" min="1" max="1440"></div>
+          <div class="field"><label for="s-off">تنبيه إذا انفصلت كاميرا</label><input type="checkbox" id="s-off"></div>
+          <div class="field"><label for="s-unk">تنبيه لوجه غير معروف خارج الدوام<small>يحتاج تفعيل التعرف على الوجه</small></label><input type="checkbox" id="s-unk"></div>
         </div>
         <div class="card"><h2>المساعد الذكي والتقارير</h2>
-          <div class="field"><label for="s-key">مفتاح Claude API<small id="s-key-state"></small></label><input type="password" id="s-key" class="ltr" autocomplete="off" placeholder="sk-ant-..."></div>
+          <div class="field"><label for="s-key">مفتاح الذكاء الاصطناعي<small id="s-key-state"></small></label><input type="password" id="s-key" class="ltr" autocomplete="off" placeholder="sk-ant-... أو sk-..."></div>
+          <div class="field"><label for="s-prov">نوع المفتاح<small>تلقائي = يعرفه من شكل المفتاح</small></label><select id="s-prov"><option value="auto">تلقائي</option><option value="claude">Claude</option><option value="openai">OpenAI (ChatGPT)</option></select></div>
+          <div class="field"><label for="s-omodel">موديل OpenAI<small>اتركه فارغ حتى يختار أحدث موديل تلقائياً</small></label><input type="text" id="s-omodel" class="ltr" placeholder="gpt-..."></div>
           <div class="field"><label for="s-rep">وقت التقرير اليومي التلقائي<small>اتركه فارغ لإيقافه</small></label><input type="time" id="s-rep"></div>
         </div>
         <div class="card"><h2>الخصوصية</h2>
           <div class="field"><label for="s-blur">تمويه الوجوه بالبث المباشر</label><input type="checkbox" id="s-blur"></div>
           <div class="field"><label for="s-notice">إظهار تنبيه المراقبة بالرئيسية</label><input type="checkbox" id="s-notice"></div>
           <div class="field"><label for="s-ret">مدة حفظ البيانات (يوم)<small>الأقدم ينحذف تلقائياً. الفيديو ما ينحفظ أبداً</small></label><input type="number" id="s-ret" min="1" max="365"></div>
+          <div class="field"><label for="s-pics">حفظ صورة لكل تنبيه</label><input type="checkbox" id="s-pics"></div>
+        </div>
+        <div class="card"><h2>التعرف على الوجه</h2>
+          <div class="field"><label for="s-faces">تفعيل التعرف على الوجه<small>يتعرف فقط على الأشخاص المسجّلين بصفحة "الأشخاص". أول تفعيل ينزّل نموذج (40 ميگا تقريباً)</small></label><input type="checkbox" id="s-faces"></div>
+          <div class="field"><label for="s-thr">دقة المطابقة<small>من 0.25 إلى 0.8. أعلى = أدق بس ممكن يفوّت ناس</small></label><input type="number" id="s-thr" min="0.25" max="0.8" step="0.05"></div>
+          <div class="muted" style="padding-top:8px">مهم: بلّغ الموظفين إن النظام يتعرف على الوجوه، وسجّل بس اللي موافقين. التنبيه بالرئيسية يتحدث تلقائياً.</div>
+        </div>
+        <div class="card"><h2>إرسال التنبيهات (واتساب / تلگرام)</h2>
+          <div class="field"><label for="n-prov">طريقة الإرسال</label><select id="n-prov"><option value="">بدون</option><option value="greenapi">واتساب: Green-API</option><option value="ultramsg">واتساب: UltraMsg</option><option value="telegram">تلگرام بوت</option><option value="webhook">n8n / Webhook (شكيب)</option></select></div>
+          <div class="field" id="n-inst-f"><label for="n-inst">رقم الـ Instance<small>من لوحة الخدمة بعد ما تربط رقم الواتساب بالـ QR</small></label><input type="text" id="n-inst" class="ltr"></div>
+          <div class="field" id="n-tok-f"><label for="n-tok">الرمز (Token)<small id="n-tok-state"></small></label><input type="password" id="n-tok" class="ltr" autocomplete="off"></div>
+          <div class="field" id="n-to-f"><label for="n-to" id="n-to-l">رقم الواتساب اللي توصله التنبيهات</label><input type="text" id="n-to" class="ltr" placeholder="07701234567"></div>
+          <div class="field"><label for="n-url" id="n-url-l">عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small></label><input type="text" id="n-url" class="ltr" placeholder="https://..."></div>
+          <div class="field"><label for="n-img">إرسال صورة التنبيه</label><input type="checkbox" id="n-img"></div>
+          <div class="field" id="n-loc-f"><label for="n-loc">دز تحركات الموظفين للفلو<small>كل ما موظف مسجّل ينشاف بكاميرا ثانية، أو يرجع بعد غياب، يوصل للـ ERP مكانه</small></label><input type="checkbox" id="n-loc"></div>
+          <div class="field" style="display:block"><label>أنواع التنبيهات المرسلة <small>إذا ما اخترت شي ترسل كلها</small></label><div class="days" id="n-kinds" style="margin-top:8px"></div></div>
+          <div class="field"><label>جرّب الإرسال بعد الحفظ<small id="n-state"></small></label><button class="btn ghost small" id="n-test">أرسل رسالة تجربة</button></div>
         </div>
         <div class="card"><h2>الأداء</h2>
           <div class="field"><label for="s-fps">عدد الصور المحللة بالثانية لكل كاميرا<small>أقل = ضغط أقل على الحاسبة</small></label><input type="number" id="s-fps" min="1" max="30"></div>
@@ -235,6 +331,46 @@
   <div class="acts"><button class="btn" id="l-ok">حفظ الخط</button><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="l-inv"> اعكس الاتجاه</label><button class="btn ghost" id="l-reset">ارسم من جديد</button><button class="btn ghost" data-close>إغلاق</button></div>
 </dialog>
 
+<dialog id="dlg-alert" class="wide">
+  <h3 id="ad-title"></h3>
+  <div class="muted" id="ad-meta" style="margin-bottom:10px"></div>
+  <img id="ad-img" class="bigpic" alt="">
+  <div class="muted" id="ad-noimg" hidden>ما محفوظة صورة لهذا التنبيه.</div>
+  <div class="acts"><a class="btn ghost" id="ad-dl" download>تحميل الصورة</a><button class="btn ghost" id="ad-live">شوف الكاميرا الآن</button><button class="btn ghost" data-close>إغلاق</button></div>
+</dialog>
+
+<dialog id="dlg-person" class="wide">
+  <h3 id="pd-title">إضافة شخص</h3>
+  <div class="f" id="pd-name-f"><label for="pd-name">الاسم</label><input type="text" id="pd-name" placeholder="مثلاً: أحمد علي"></div>
+  <div class="grid2" id="pd-extra-f" style="gap:12px"><div class="f"><label for="pd-job">الوظيفة / الشغل</label><input type="text" id="pd-job" placeholder="مثلاً: محاسب"></div>
+    <div class="f"><label for="pd-erp">رقم الموظف بالـ ERP (اختياري)</label><input type="text" id="pd-erp" class="ltr" placeholder="E-102"></div></div>
+  <div class="seg"><button class="btn ghost small on" data-src="file">صورة من الحاسبة</button><button class="btn ghost small" data-src="cam">التقاط من كاميرا</button></div>
+  <div id="pd-file"><input type="file" id="pd-files" accept="image/*" multiple><div class="muted" style="margin-top:6px">اختر صورة أو أكثر، الوجه واضح ومقابل. كل ما تزيد الصور يصير التعرف أدق.</div></div>
+  <div id="pd-cam" hidden><select id="pd-camsel" style="margin-bottom:8px"></select><div class="stage" style="cursor:default"><img id="pd-live" alt=""></div><div class="muted" style="margin-top:6px">خلّي الشخص يوقف مقابل الكاميرا وحده، واضغط "التقاط".</div></div>
+  <label style="display:flex;gap:6px;align-items:center;margin-top:12px" id="pd-alert-f"><input type="checkbox" id="pd-alert"> نبّهني كلما يظهر هذا الشخص</label>
+  <div class="err" id="pd-err"></div>
+  <div class="acts"><button class="btn" id="pd-ok">حفظ</button><button class="btn ghost" data-close>إلغاء</button></div>
+</dialog>
+
+<dialog id="dlg-pedit">
+  <h3>تعديل بيانات الموظف</h3>
+  <div class="f"><label for="pe-name">الاسم</label><input type="text" id="pe-name"></div>
+  <div class="f"><label for="pe-job">الوظيفة / الشغل</label><input type="text" id="pe-job"></div>
+  <div class="f"><label for="pe-erp">رقم الموظف بالـ ERP<small class="muted"> حتى يربط n8n والـ ERP التنبيهات والمكان بنفس الموظف</small></label><input type="text" id="pe-erp" class="ltr"></div>
+  <div class="err" id="pe-err"></div>
+  <div class="acts"><button class="btn" id="pe-ok">حفظ</button><button class="btn ghost" data-close>إلغاء</button></div>
+</dialog>
+
+<dialog id="dlg-map">
+  <h3>إضافة مخطط</h3>
+  <div class="f"><label for="md-name">الاسم</label><input type="text" id="md-name" placeholder="مثلاً: الطابق الأرضي"></div>
+  <div class="f"><label for="md-file">صورة المخطط</label><input type="file" id="md-file" accept="image/*"></div>
+  <div class="muted">أي صورة تبين المكان من فوق: رسمة هندسية، صورة للمخطط بالموبايل، أو لقطة من Google Maps.</div>
+  <div class="err" id="md-err"></div>
+  <div class="acts"><button class="btn" id="md-ok">حفظ</button><button class="btn ghost" data-close>إلغاء</button></div>
+</dialog>
+
+<div id="popup" hidden><button class="x" id="pop-x">✕</button><img id="pop-img" alt="" hidden><div class="t"><b>تنبيه جديد</b><div id="pop-msg"></div><div class="muted" id="pop-time"></div></div></div>
 <div id="toast"></div>
 <div id="print-area"></div>
 
@@ -272,7 +408,11 @@ function show(v) {
   if (v === "settings") loadSettings();
   if (v === "reports") loadReports();
   if (v === "home") loadStats();
+  if (v === "alerts") loadAlerts();
+  if (v === "people") loadPeople();
+  if (v === "map") loadMap();
 }
+document.addEventListener("click", e => { const g = e.target.closest("[data-goto]"); if (g) show(g.dataset.goto); });
 document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
 
 // ---------- live pictures: one small request per picture, only for what is on screen ----------
@@ -306,8 +446,12 @@ async function loadInfo() {
   $("ver").textContent = `الإصدار ${i.version}`; $("s-ver").textContent = i.version;
   $("notice").hidden = !i.privacy.show_notice; $("notice").textContent = i.privacy.notice_text;
   $("blurinfo").textContent = i.privacy.blur_people ? "الوجوه مموّهة" : "";
-  $("ai-state").textContent = i.ai_enabled ? "المساعد الذكي: مفعّل" : "المساعد الذكي: بدون مفتاح";
+  $("ai-state").textContent = i.ai_enabled ? `المساعد الذكي: ${i.ai_provider === "openai" ? "OpenAI" : "Claude"}` : "المساعد الذكي: بدون مفتاح";
+  info = i; setBadge(i.unseen_alerts);
+  if (lastAlertId === null) lastAlertId = i.last_alert_id;
 }
+let info = {}, lastAlertId = null;
+function setBadge(n) { $("badge").hidden = !n; $("badge").textContent = n > 99 ? "99+" : n; }
 
 // ---------- cameras ----------
 const statusPill = (c) => c.status === "online" ? `<span class="pill ok"><i></i>شغّالة</span>`
@@ -318,12 +462,13 @@ function camCard(c, manage) {
   return `<div class="cam"><div class="pic"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
     <div class="info"><div class="row"><span class="name">${esc(c.name)}</span><span data-pill="${esc(c.id)}"></span></div>
     <div class="row"><span class="counts" data-counts="${esc(c.id)}"></span><span class="st" data-st="${esc(c.id)}"></span></div>
-    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
+    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
     </div></div>`;
 }
 
+let lastCams = [];
 async function loadCams() {
-  const cams = await j("/api/cameras");
+  const cams = await j("/api/cameras"); lastCams = cams;
   const sig = cams.map(c => c.id + c.name).join("|");
   if (sig !== camSig) {
     camSig = sig;
@@ -441,10 +586,224 @@ async function loadStats() {
   const fmt = (s) => s >= 60 ? `${(s/60).toFixed(1)} د` : `${Math.round(s)} ث`;
   $("zones").innerHTML = z.length ? z.map(r => `<tr><td>${esc(r.zone_id)}</td><td>${r.visits}</td><td>${fmt(r.avg_dwell_s)}</td><td>${fmt(r.max_dwell_s)}</td></tr>`).join("")
     : `<tr><td colspan="4" class="muted">لا توجد بيانات مناطق لهذا اليوم.</td></tr>`;
-  $("alerts").innerHTML = a.length ? a.slice(0, 12).map(r => `<tr><td class="muted" style="width:70px">${esc(r.time.slice(11))}</td><td>${esc(r.message)}</td></tr>`).join("")
+  a.forEach(r => alertCache[r.id] = r);
+  $("alerts").innerHTML = a.length ? a.slice(0, 8).map(r => `<tr class="click${r.seen ? "" : " unseen"}" data-alert="${r.id}"><td class="muted" style="width:60px">${esc(r.time.slice(11))}</td><td>${esc(r.message)}</td><td style="width:72px">${r.has_image ? `<img class="thumb" loading="lazy" src="/api/alerts/${r.id}/image" alt="">` : ""}</td></tr>`).join("")
     : `<tr><td class="muted">لا توجد تنبيهات لهذا اليوم.</td></tr>`;
 }
 $("day").onchange = loadStats;
+
+// ---------- alerts ----------
+const KIND = {after_hours:"خارج الدوام", crowding:"ازدحام", person:"شخص مسجّل", unknown:"غير معروف", offline:"كاميرا مفصولة"};
+let alertCache = {};
+const camName = (id) => (lastCams.find(c => c.id === id) || {}).name || id;
+async function loadAlerts() {
+  if (!$("al-day").value && !loadAlerts.all) $("al-day").value = today;
+  const q = new URLSearchParams({limit: 200}); if ($("al-day").value) q.set("day", $("al-day").value); if ($("al-kind").value) q.set("kind", $("al-kind").value);
+  const a = await j(`/api/alerts?${q}`);
+  a.forEach(r => alertCache[r.id] = r);
+  $("al-list").innerHTML = a.length ? a.map(r => `<tr class="click${r.seen ? "" : " unseen"}" data-alert="${r.id}">
+      <td>${r.has_image ? `<img class="thumb" loading="lazy" src="/api/alerts/${r.id}/image" alt="">` : ""}</td>
+      <td><span class="ltr">${esc(r.time)}</span></td><td><span class="kind ${esc(r.kind)}">${esc(KIND[r.kind] || r.kind)}</span></td>
+      <td>${esc(r.message)}</td><td class="muted">${esc(camName(r.camera_id))}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted">لا توجد تنبيهات.</td></tr>`;
+}
+$("al-day").onchange = () => { loadAlerts.all = false; loadAlerts(); }; $("al-kind").onchange = loadAlerts;
+$("al-all").onclick = () => { loadAlerts.all = true; $("al-day").value = ""; loadAlerts(); };
+$("al-seen").onclick = async () => { const r = await post("/api/alerts/seen", {}); setBadge(r.unseen); loadAlerts(); if (view === "home") loadStats(); };
+document.addEventListener("click", e => { const row = e.target.closest("[data-alert]"); if (row) openAlert(+row.dataset.alert); });
+async function openAlert(id) {
+  const r = alertCache[id]; if (!r) return;
+  $("ad-title").textContent = r.message;
+  $("ad-meta").innerHTML = `<span class="kind ${esc(r.kind)}">${esc(KIND[r.kind] || r.kind)}</span> · <span class="ltr">${esc(r.time)}</span> · ${esc(camName(r.camera_id))}`;
+  $("ad-img").hidden = !r.has_image; $("ad-noimg").hidden = r.has_image; $("ad-dl").hidden = !r.has_image;
+  if (r.has_image) { $("ad-img").src = `/api/alerts/${id}/image`; $("ad-dl").href = `/api/alerts/${id}/image`; $("ad-dl").download = `alert-${id}.jpg`; }
+  $("ad-live").onclick = () => { $("dlg-alert").close(); show("home"); };
+  $("dlg-alert").showModal();
+  if (!r.seen) { r.seen = true; document.querySelectorAll(`[data-alert="${id}"]`).forEach(e => e.classList.remove("unseen")); try { setBadge((await post("/api/alerts/seen", {ids:[id]})).unseen); } catch (_) {} }
+}
+// new alerts: popup + sound + Windows notification
+function beep() { try { const c = new AudioContext(), o = c.createOscillator(), g = c.createGain(); o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.setValueAtTime(.15, c.currentTime); g.gain.exponentialRampToValueAtTime(.001, c.currentTime + .6); o.start(); o.stop(c.currentTime + .6); } catch (_) {} }
+async function pollAlerts() {
+  if (lastAlertId === null) return;
+  const r = await j(`/api/alerts/feed?after=${lastAlertId}`);
+  setBadge(r.unseen);
+  if (!r.alerts.length) return;
+  r.alerts.forEach(a => { alertCache[a.id] = a; lastAlertId = Math.max(lastAlertId, a.id); });
+  const a = r.alerts[r.alerts.length - 1];
+  $("pop-msg").textContent = a.message; $("pop-time").textContent = a.time.slice(11) + " · " + camName(a.camera_id);
+  $("pop-img").hidden = !a.has_image; if (a.has_image) $("pop-img").src = `/api/alerts/${a.id}/image`;
+  $("popup").hidden = false; $("popup").dataset.id = a.id; beep();
+  clearTimeout(pollAlerts.t); pollAlerts.t = setTimeout(() => $("popup").hidden = true, 20000);
+  if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+    const n = new Notification("تنبيه: " + (info.site_name || "الكاميرات"), {body: a.message, icon: a.has_image ? `/api/alerts/${a.id}/image` : undefined});
+    n.onclick = () => { window.focus(); openAlert(a.id); };
+  }
+  if (view === "alerts") loadAlerts(); if (view === "home") loadStats();
+}
+$("popup").onclick = (e) => { if (e.target.id === "pop-x") { $("popup").hidden = true; return; } $("popup").hidden = true; openAlert(+$("popup").dataset.id); };
+document.addEventListener("click", () => { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {}); }, {once:true});
+
+// ---------- people (face recognition) ----------
+async function loadPeople() {
+  const r = await j("/api/people");
+  const st = $("p-state");
+  if (!r.enabled) { st.hidden = false; st.innerHTML = `<span>التعرف على الوجه مطفّي. شغّله حتى يبدأ يتعرف على الأشخاص المسجّلين.</span><button class="btn small" id="p-on">تفعيل</button>`; $("p-on").onclick = enableFaces; }
+  else if (r.status === "downloading") { st.hidden = false; st.textContent = "جاري تجهيز التعرف على الوجه (تنزيل النموذج أول مرة، دقيقة تقريباً)..."; setTimeout(() => view === "people" && loadPeople(), 4000); }
+  else if (String(r.status).startsWith("error")) { st.hidden = false; st.innerHTML = `<span>ما اشتغل التعرف على الوجه: ${esc(r.status)}</span><button class="btn small" id="p-on">حاول مرة ثانية</button>`; $("p-on").onclick = enableFaces; }
+  else st.hidden = true;
+  $("p-count").textContent = r.people.length ? `(${r.people.length})` : "";
+  $("p-list").innerHTML = r.people.length ? r.people.map(p => `<div class="person">
+      <img src="/api/people/${p.id}/photo?${p.photos}" alt="" onerror="this.outerHTML='<div class=ph>بدون صورة</div>'">
+      <b>${esc(p.name)}</b>${p.job || p.erp_id ? `<span class="muted">${esc(p.job)}${p.job && p.erp_id ? " · " : ""}${p.erp_id ? `<span class="ltr">${esc(p.erp_id)}</span>` : ""}</span>` : ""}<span class="muted">${p.photos} صورة · ${p.last_seen ? `آخر ظهور <span class="ltr">${esc(p.last_seen.time)}</span>` : "ما انشاف بعد"}</span>
+      <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-palert="${p.id}" ${p.alert_on_seen ? "checked" : ""}> نبّهني لما يظهر</label>
+      <div class="acts"><button class="btn ghost small" data-pedit="${p.id}">تعديل</button><button class="btn ghost small" data-pphoto="${p.id}" data-name="${esc(p.name)}">إضافة صورة</button><button class="btn danger small" data-pdel="${p.id}" data-name="${esc(p.name)}">حذف</button></div></div>`).join("")
+    : `<div class="empty" style="grid-column:1/-1"><b>ماكو أشخاص مسجّلين</b><span>سجّل الموظفين بصورة واضحة لوجوههم حتى يتعرف عليهم النظام.</span></div>`;
+  document.querySelectorAll("[data-palert]").forEach(c => c.onchange = () => j(`/api/people/${c.dataset.palert}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({alert_on_seen: c.checked})}).then(() => toast("انحفظ")).catch(e => toast(e.message)));
+  document.querySelectorAll("[data-pphoto]").forEach(b => b.onclick = () => openPerson(b.dataset.pphoto, b.dataset.name));
+  peopleById = Object.fromEntries(r.people.map(p => [p.id, p]));
+  document.querySelectorAll("[data-pedit]").forEach(b => b.onclick = () => editPerson(b.dataset.pedit));
+  document.querySelectorAll("[data-pdel]").forEach(b => b.onclick = async () => { if (!confirm(`حذف ${b.dataset.name} وكل سجل ظهوره؟`)) return; await j(`/api/people/${b.dataset.pdel}`, {method:"DELETE"}); toast("انحذف"); loadPeople(); });
+  if (!$("att-day").value) $("att-day").value = today;
+  const att = await j(`/api/attendance?day=${$("att-day").value}`);
+  $("att").innerHTML = att.length ? att.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.first)}</td><td>${esc(a.last)}</td><td class="muted">${a.cameras.map(c => esc(camName(c))).join("، ")}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">ما انشاف أحد من المسجّلين بهذا اليوم.</td></tr>`;
+}
+$("att-day").onchange = loadPeople;
+let peopleById = {}, editId = null;
+function editPerson(id) {
+  const p = peopleById[id]; if (!p) return;
+  editId = id; $("pe-name").value = p.name; $("pe-job").value = p.job || ""; $("pe-erp").value = p.erp_id || ""; $("pe-err").textContent = "";
+  $("dlg-pedit").showModal();
+}
+$("pe-ok").onclick = async () => {
+  try {
+    await j(`/api/people/${editId}`, {method:"PATCH", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name: $("pe-name").value, job: $("pe-job").value, erp_id: $("pe-erp").value})});
+    $("dlg-pedit").close(); toast("انحفظ"); view === "map" ? loadMap() : loadPeople();
+  } catch (e) { $("pe-err").textContent = e.message; }
+};
+async function enableFaces() {
+  try { await post("/api/settings", {faces: {enabled: true}}); toast("انفعّل. جاري تجهيزه..."); loadInfo(); loadPeople(); } catch (e) { toast(e.message); }
+}
+let personId = null, personSrc = "file";
+function openPerson(id, name) {
+  personId = id || null;
+  $("pd-title").textContent = id ? `إضافة صورة: ${name}` : "إضافة شخص";
+  $("pd-name-f").hidden = !!id; $("pd-alert-f").hidden = !!id; $("pd-extra-f").hidden = !!id;
+  $("pd-name").value = ""; $("pd-job").value = ""; $("pd-erp").value = ""; $("pd-files").value = ""; $("pd-alert").checked = false; $("pd-err").textContent = "";
+  $("pd-camsel").innerHTML = lastCams.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("") || `<option value="">ماكو كاميرات</option>`;
+  setSrc("file"); $("dlg-person").showModal();
+}
+function setSrc(src) {
+  personSrc = src;
+  document.querySelectorAll("[data-src]").forEach(b => b.classList.toggle("on", b.dataset.src === src));
+  $("pd-file").hidden = src !== "file"; $("pd-cam").hidden = src !== "cam";
+  $("pd-ok").textContent = src === "cam" ? "التقاط وحفظ" : "حفظ";
+  if (src === "cam") { const img = $("pd-live"); img.dataset.cam = $("pd-camsel").value; pump(img); }
+}
+document.querySelectorAll("[data-src]").forEach(b => b.onclick = () => setSrc(b.dataset.src));
+$("pd-camsel").onchange = () => { $("pd-live").dataset.cam = $("pd-camsel").value; };
+$("p-add").onclick = () => openPerson(null);
+const readFile = (f) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(f); });
+$("pd-ok").onclick = async () => {
+  $("pd-err").textContent = ""; $("pd-ok").disabled = true;
+  try {
+    const sources = personSrc === "cam" ? [{camera_id: $("pd-camsel").value}] : await Promise.all([...$("pd-files").files].map(async f => ({image: await readFile(f)})));
+    if (!sources.length) throw new Error("اختر صورة أولاً.");
+    let id = personId, done = 0, errors = [];
+    for (const src of sources) {
+      try {
+        if (!id) { const r = await post("/api/people", {...src, name: $("pd-name").value, job: $("pd-job").value, erp_id: $("pd-erp").value, alert_on_seen: $("pd-alert").checked}); id = r.id; }
+        else await post(`/api/people/${id}/photos`, src);
+        done++;
+      } catch (e) { errors.push(e.message); }
+    }
+    if (!done) throw new Error(errors[0]);
+    $("dlg-person").close(); toast(`انحفظ (${done} صورة)` + (errors.length ? ` · ${errors.length} صورة ما بيها وجه واضح` : "")); loadPeople();
+  } catch (e) { $("pd-err").textContent = e.message; }
+  $("pd-ok").disabled = false;
+};
+
+// ---------- floor map: where each enrolled person was last seen ----------
+let mapData = {maps: [], cams: {}}, mapId = null, mapEdit = false, mapHL = null;
+const camIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l12-3 2 7-12 3z"/><path d="M7 14v5h5"/></svg>`;
+const agoText = (m) => m === null ? "ما انشاف" : m < 1 ? "هسه" : m < 60 ? `قبل ${m} دقيقة` : m < 1440 ? `قبل ${Math.floor(m / 60)} ساعة` : `قبل ${Math.floor(m / 1440)} يوم`;
+async function loadMap() {
+  const [md, loc] = await Promise.all([j("/api/maps"), j("/api/locations")]);
+  mapData = md;
+  if (!mapData.maps.find(m => m.id === mapId)) mapId = mapData.maps[0]?.id || null;
+  const has = !!mapId;
+  $("m-wrap").hidden = !has; $("m-empty").hidden = has; $("m-edit").hidden = !has; $("m-del").hidden = !has;
+  if (!has && mapEdit) setMapEdit(false);
+  $("m-tabs").hidden = mapData.maps.length < 2;
+  $("m-tabs").innerHTML = mapData.maps.map(m => `<button class="btn ghost small ${m.id === mapId ? "on" : ""}" data-map="${m.id}">${esc(m.name)}</button>`).join("");
+  document.querySelectorAll("[data-map]").forEach(b => b.onclick = () => { mapId = b.dataset.map; loadMap(); });
+  const st = $("m-state");
+  if (!info.faces || !info.faces.enabled) { st.hidden = false; st.innerHTML = `<span>التعرف على الوجه مطفّي، فما راح يطلع أحد على الخريطة.</span><button class="btn small" data-goto="people">صفحة الأشخاص</button>`; }
+  else st.hidden = true;
+  if (has) {
+    const img = $("m-img"), src = `/api/maps/${mapId}/image`;
+    if (img.dataset.src !== src) { img.dataset.src = src; img.src = src; }
+    const atCam = {};
+    loc.people.forEach(p => { if (p.location && p.location.map_id === mapId) (atCam[p.camera_id] ||= []).push(p); });
+    $("m-layer").innerHTML = Object.entries(mapData.cams).filter(([, c]) => c.map === mapId).map(([cid, c]) => {
+      const who = (atCam[cid] || []).filter(p => mapEdit || p.present || p.minutes_ago < 24 * 60);
+      return `<div class="mcam" data-mcam="${esc(cid)}" style="left:${c.x * 100}%;top:${c.y * 100}%">
+        <div class="who">${who.map(p => `<span class="${p.present ? "" : "old"} ${p.person_id === mapHL ? "hl" : ""}" title="${esc(agoText(p.minutes_ago))}">${esc(p.name)}</span>`).join("")}</div>
+        <div class="dot">${camIcon}</div><div class="cn">${esc(camName(cid))}</div></div>`;
+    }).join("");
+    document.querySelectorAll(".mcam").forEach(el => el.onpointerdown = (e) => startDrag(e, el));
+  }
+  const ppl = loc.people;
+  $("m-count").textContent = ppl.length ? `(${ppl.filter(p => p.present).length} موجود من ${ppl.length})` : "";
+  $("m-people").innerHTML = ppl.length ? ppl.map(p => `<tr class="click" data-mp="${p.person_id}">
+      <td><b>${esc(p.name)}</b>${p.job ? `<div class="muted">${esc(p.job)}</div>` : ""}</td>
+      <td>${p.camera ? esc(p.camera) + (p.location ? `<div class="muted">${esc(p.location.map)}</div>` : `<div class="muted">الكاميرا مو على المخطط</div>`) : `<span class="muted">-</span>`}</td>
+      <td>${p.present ? `<span class="pill ok"><i></i>${esc(agoText(p.minutes_ago))}</span>` : `<span class="muted">${esc(agoText(p.minutes_ago))}</span>`}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">ماكو موظفين مسجّلين. سجّلهم من صفحة الأشخاص.</td></tr>`;
+  $("m-note").textContent = `"موجود" يعني انشاف خلال آخر ${loc.present_minutes} دقيقة. المكان هو آخر كاميرا شافت وجهه.`;
+  document.querySelectorAll("[data-mp]").forEach(tr => tr.onclick = () => {
+    const p = ppl.find(x => x.person_id === tr.dataset.mp);
+    mapHL = p.person_id;
+    if (p.location && p.location.map_id !== mapId) mapId = p.location.map_id;
+    loadMap(); if (!p.location) toast(p.camera ? "كاميرته مو محطوطة على المخطط بعد" : "ما انشاف بعد");
+  });
+}
+function setMapEdit(on) {
+  mapEdit = on; $("m-wrap").classList.toggle("edit", on); $("m-editbar").hidden = !on; $("m-edit").hidden = on || !mapId;
+  if (on) $("m-cam").innerHTML = lastCams.map(c => `<option value="${esc(c.id)}">${esc(c.name)}${mapData.cams[c.id] ? " ✓" : ""}</option>`).join("") || `<option value="">ماكو كاميرات</option>`;
+  loadMap();
+}
+const placeCam = (cid, map, x, y) => j(`/api/maps/cameras/${encodeURIComponent(cid)}`, {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({map, x, y})});
+function mapPoint(e) { const r = $("m-img").getBoundingClientRect(); return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)]; }
+let dragging = null;
+function startDrag(e, el) {
+  if (!mapEdit) return;
+  e.preventDefault(); e.stopPropagation(); dragging = el; el.setPointerCapture(e.pointerId);
+  el.onpointermove = (ev) => { const [x, y] = mapPoint(ev); el.style.left = x * 100 + "%"; el.style.top = y * 100 + "%"; };
+  el.onpointerup = async (ev) => { el.onpointermove = el.onpointerup = null; const [x, y] = mapPoint(ev); setTimeout(() => dragging = null, 0);
+    try { await placeCam(el.dataset.mcam, mapId, x, y); $("m-cam").value = el.dataset.mcam; } catch (err) { toast(err.message); } loadMap(); };
+}
+$("m-wrap").onclick = async (e) => {
+  if (!mapEdit || dragging || e.target.closest(".mcam")) return;
+  const cid = $("m-cam").value; if (!cid) return;
+  const [x, y] = mapPoint(e);
+  try { await placeCam(cid, mapId, x, y); toast("انحطت الكاميرا"); setMapEdit(true); } catch (err) { toast(err.message); }
+};
+$("m-unplace").onclick = async () => { const cid = $("m-cam").value; if (!cid) return; try { await placeCam(cid, null); setMapEdit(true); } catch (e) { toast(e.message); } };
+$("m-edit").onclick = () => setMapEdit(true);
+$("m-done").onclick = () => setMapEdit(false);
+$("m-del").onclick = async () => { const m = mapData.maps.find(x => x.id === mapId); if (!m || !confirm(`حذف المخطط "${m.name}"؟ الكاميرات تنشال منه بس ما تنحذف.`)) return; await j(`/api/maps/${mapId}`, {method:"DELETE"}); mapId = null; setMapEdit(false); };
+const openMapAdd = () => { $("md-name").value = ""; $("md-file").value = ""; $("md-err").textContent = ""; $("dlg-map").showModal(); };
+$("m-add").onclick = openMapAdd;
+document.addEventListener("click", e => { if (e.target.closest("[data-mapadd]")) openMapAdd(); });
+$("md-ok").onclick = async () => {
+  $("md-err").textContent = ""; const f = $("md-file").files[0];
+  if (!f) { $("md-err").textContent = "اختر صورة المخطط."; return; }
+  $("md-ok").disabled = true;
+  try { const m = await post("/api/maps", {name: $("md-name").value, image: await readFile(f)}); mapId = m.id; $("dlg-map").close(); toast("انضاف المخطط. هسه حط الكاميرات بمكانها."); setMapEdit(true); }
+  catch (e) { $("md-err").textContent = e.message; }
+  $("md-ok").disabled = false;
+};
 
 // ---------- reports ----------
 function showAnswer(text) { lastReport = text; $("answer").hidden = false; $("answer").innerHTML = rich(text); $("print").disabled = false; }
@@ -487,7 +846,14 @@ async function loadSettings() {
   $("s-site").value = s.site_name; $("s-start").value = s.working_hours.start; $("s-end").value = s.working_hours.end;
   document.querySelectorAll("#s-days input").forEach(i => i.checked = s.working_hours.days.includes(+i.value));
   $("s-after").checked = s.alerts.after_hours_presence; $("s-max").value = s.alerts.max_occupancy; $("s-cool").value = s.alerts.cooldown_minutes;
-  $("s-key").value = ""; $("s-key-state").textContent = s.agent.has_api_key ? "مفتاح محفوظ. اكتب مفتاح جديد لتغييره" : "بدونه يطلع تقرير أساسي فقط";
+  $("s-key").value = ""; $("s-key-state").textContent = s.agent.has_api_key ? "مفتاح محفوظ. اكتب مفتاح جديد لتغييره" : "Claude أو OpenAI. بدونه يطلع تقرير أساسي فقط";
+  $("s-prov").value = s.agent.provider; $("s-omodel").value = s.agent.openai_model;
+  $("s-off").checked = s.alerts.camera_offline; $("s-unk").checked = s.alerts.unknown_after_hours; $("s-pics").checked = s.privacy.save_alert_pictures;
+  $("s-faces").checked = s.faces.enabled; $("s-thr").value = s.faces.threshold;
+  const n = s.notify; $("n-prov").value = n.provider; $("n-inst").value = n.instance; $("n-to").value = n.to; $("n-url").value = n.api_url; $("n-img").checked = n.send_images; $("n-loc").checked = !!n.send_locations;
+  $("n-tok").value = ""; $("n-tok-state").textContent = n.has_token ? "محفوظ. اكتب رمز جديد لتغييره" : "";
+  document.querySelectorAll("#n-kinds input").forEach(i => i.checked = n.kinds.includes(i.value)); notifyForm();
+  $("n-state").textContent = info.notify && info.notify.last_error ? "آخر خطأ: " + info.notify.last_error : "";
   $("s-rep").value = s.agent.daily_report_time;
   $("s-blur").checked = s.privacy.blur_people; $("s-notice").checked = s.privacy.show_notice; $("s-ret").value = s.privacy.retention_days;
   $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence;
@@ -498,18 +864,42 @@ $("save").onclick = async () => {
   const body = {
     site_name: $("s-site").value,
     working_hours: {start: $("s-start").value, end: $("s-end").value, days: [...document.querySelectorAll("#s-days input:checked")].map(i => +i.value)},
-    alerts: {after_hours_presence: $("s-after").checked, max_occupancy: $("s-max").value, cooldown_minutes: $("s-cool").value},
-    agent: {daily_report_time: $("s-rep").value},
-    privacy: {blur_people: $("s-blur").checked, show_notice: $("s-notice").checked, retention_days: $("s-ret").value},
+    alerts: {after_hours_presence: $("s-after").checked, max_occupancy: $("s-max").value, cooldown_minutes: $("s-cool").value,
+             camera_offline: $("s-off").checked, unknown_after_hours: $("s-unk").checked},
+    agent: {daily_report_time: $("s-rep").value, provider: $("s-prov").value, openai_model: $("s-omodel").value},
+    privacy: {blur_people: $("s-blur").checked, show_notice: $("s-notice").checked, retention_days: $("s-ret").value, save_alert_pictures: $("s-pics").checked},
+    faces: {enabled: $("s-faces").checked, threshold: $("s-thr").value},
+    notify: {provider: $("n-prov").value, instance: $("n-inst").value, to: $("n-to").value, api_url: $("n-url").value, send_images: $("n-img").checked, send_locations: $("n-loc").checked,
+             kinds: [...document.querySelectorAll("#n-kinds input:checked")].map(i => i.value)},
     detector: {process_fps: $("s-fps").value, confidence: $("s-conf").value},
     server: {}, updates: {auto_install: $("s-auto").checked},
   };
   if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
   if ($("s-pass").value) body.server.password = $("s-pass").value;
+  if ($("n-tok").value.trim()) body.notify.token = $("n-tok").value.trim();
   $("save").disabled = true;
   try { await post("/api/settings", body); toast("انحفظت الإعدادات"); await loadInfo(); await loadSettings(); }
   catch (e) { $("set-state").textContent = e.message; toast("ما انحفظت: " + e.message); }
   $("save").disabled = false;
+};
+$("n-kinds").innerHTML = Object.entries(KIND).map(([k, v]) => `<label><input type="checkbox" value="${k}">${v}</label>`).join("");
+function notifyForm() {
+  const p = $("n-prov").value;
+  $("n-inst-f").hidden = p === "telegram" || !p;
+  const hook = p === "webhook";
+  $("n-loc-f").hidden = !hook;
+  $("n-to-l").textContent = p === "telegram" ? "رقم المحادثة (chat id)" : hook ? "رقم الواتساب (اختياري، يوصل للفلو)" : "رقم الواتساب اللي توصله التنبيهات";
+  $("n-to").placeholder = p === "telegram" ? "123456789" : "07701234567";
+  $("n-url-l").innerHTML = hook ? "رابط الـ Webhook<small>Production URL من عقدة Webhook بـ n8n</small>" : "عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small>";
+  $("n-url").placeholder = hook ? "https://n8n.example.com/webhook/cctv" : "https://...";
+  $("n-tok-f").querySelector("label").firstChild.textContent = hook ? "رمز سري (اختياري)" : "الرمز (Token)";
+}
+$("n-prov").onchange = notifyForm;
+$("n-test").onclick = async () => {
+  $("n-test").disabled = true; $("n-state").textContent = "جاري الإرسال...";
+  try { const r = await post("/api/notify/test"); $("n-state").textContent = (r.with_image ? "انرسلت مع صورة" : "انرسلت") + ($("n-prov").value === "webhook" ? ". شوف Executions بـ n8n" : ". شوف الواتساب"); }
+  catch (e) { $("n-state").textContent = e.message; }
+  $("n-test").disabled = false;
 };
 $("upd-check").onclick = async () => {
   $("upd-check").disabled = true; $("s-upd").textContent = "جاري التحقق...";
@@ -540,6 +930,8 @@ window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/win
   await loadInfo(); await Promise.all([loadCams(), loadStats()]);
   setInterval(() => loadCams().catch(() => {}), 2000);
   setInterval(() => { if (view === "home") loadStats().catch(() => {}); }, 15000);
+  setInterval(() => pollAlerts().catch(() => {}), 4000);
+  setInterval(() => { if (view === "map" && !mapEdit && !document.querySelector("dialog[open]")) loadMap().catch(() => {}); }, 8000);
   loadUpdate().catch(() => {}); setInterval(() => loadUpdate().catch(() => {}), 60000);
 })();
 </script>

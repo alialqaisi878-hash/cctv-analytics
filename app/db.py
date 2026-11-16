@@ -1,10 +1,11 @@
-"""SQLite storage for aggregate, anonymous analytics.
+"""SQLite storage: counts, timings, alerts (with their picture) and face sightings.
 
-Only counts and timings are stored. Track IDs are short-lived numbers assigned by
-the tracker; they reset when the app restarts and cannot identify anyone.
+Counts are anonymous: track IDs are short-lived numbers assigned by the tracker.
+Names appear only for people the owner enrolled in face recognition (off by default).
 """
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import threading
 import time
@@ -26,6 +27,9 @@ CREATE TABLE IF NOT EXISTS occupancy (
 CREATE INDEX IF NOT EXISTS ix_occ_day ON occupancy(day);
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY, ts REAL, day TEXT, camera_id TEXT, kind TEXT, message TEXT);
+CREATE TABLE IF NOT EXISTS sightings (
+    id INTEGER PRIMARY KEY, ts REAL, day TEXT, camera_id TEXT, person_id TEXT, name TEXT, score REAL);
+CREATE INDEX IF NOT EXISTS ix_sight_day ON sightings(day);
 CREATE TABLE IF NOT EXISTS reports (
     id INTEGER PRIMARY KEY, ts REAL, day TEXT, kind TEXT, content TEXT);
 """
@@ -39,7 +43,12 @@ class Database:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(alerts)")}
+        for col, typ in (("image", "TEXT"), ("seen", "INTEGER DEFAULT 0"), ("person_id", "TEXT")):
+            if col not in cols:   # databases of older versions
+                self._conn.execute(f"ALTER TABLE alerts ADD COLUMN {col} {typ}")
         self._conn.commit()
+        self.snap_dir = Path(path).parent / "snapshots"
 
     # ---------- helpers ----------
     def local(self, ts: float) -> datetime:
@@ -78,10 +87,76 @@ class Database:
         self._exec("INSERT INTO occupancy(ts,day,hour,camera_id,people) VALUES (?,?,?,?,?)",
                    (ts, day, hour, camera_id, people))
 
-    def add_alert(self, ts, camera_id, kind, message):
+    def add_alert(self, ts, camera_id, kind, message, jpeg: bytes | None = None, person_id: str | None = None) -> int:
+        """Store an alert; its picture (if any) goes to data/snapshots/<day>/ and is deleted with the alert."""
         day, _ = self._dh(ts)
-        self._exec("INSERT INTO alerts(ts,day,camera_id,kind,message) VALUES (?,?,?,?,?)",
-                   (ts, day, camera_id, kind, message))
+        image = None
+        if jpeg:
+            folder = self.snap_dir / day
+            folder.mkdir(parents=True, exist_ok=True)
+            name = f"{int(ts * 1000)}_{''.join(ch if ch.isalnum() else '_' for ch in str(camera_id))}.jpg"
+            (folder / name).write_bytes(jpeg)
+            image = f"{day}/{name}"
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO alerts(ts,day,camera_id,kind,message,image,seen,person_id) VALUES (?,?,?,?,?,?,0,?)",
+                (ts, day, camera_id, kind, message, image, person_id))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def alert_image(self, alert_id: int) -> Path | None:
+        rows = self._query("SELECT image FROM alerts WHERE id=?", (alert_id,))
+        if not rows or not rows[0]["image"]:
+            return None
+        p = (self.snap_dir / rows[0]["image"]).resolve()
+        return p if p.is_file() and self.snap_dir.resolve() in p.parents else None
+
+    def mark_seen(self, ids: list[int] | None = None) -> None:
+        if ids is None:
+            self._exec("UPDATE alerts SET seen=1 WHERE seen=0")
+        else:
+            with self._lock:
+                self._conn.executemany("UPDATE alerts SET seen=1 WHERE id=?", [(int(i),) for i in ids])
+                self._conn.commit()
+
+    def unseen_count(self) -> int:
+        return self._query("SELECT COUNT(*) n FROM alerts WHERE seen=0")[0]["n"]
+
+    def alerts_after(self, after_id: int, limit: int = 20) -> list[dict]:
+        rows = self._query("SELECT * FROM alerts WHERE id>? ORDER BY id LIMIT ?", (int(after_id), limit))
+        return [self._alert_row(r) for r in rows]
+
+    def last_alert_id(self) -> int:
+        return self._query("SELECT COALESCE(MAX(id),0) m FROM alerts")[0]["m"]
+
+    def add_sighting(self, ts, camera_id, person_id, name, score):
+        day, _ = self._dh(ts)
+        self._exec("INSERT INTO sightings(ts,day,camera_id,person_id,name,score) VALUES (?,?,?,?,?,?)",
+                   (ts, day, camera_id, person_id, name, round(float(score), 3)))
+
+    def attendance(self, day: str) -> list[dict]:
+        """First and last time each enrolled person was recognised on a day."""
+        rows = self._query("SELECT person_id, name, MIN(ts) first, MAX(ts) last, COUNT(*) n, "
+                           "GROUP_CONCAT(DISTINCT camera_id) cams FROM sightings WHERE day=? "
+                           "GROUP BY person_id ORDER BY first", (day,))
+        for r in rows:
+            r["first"] = self.local(r["first"]).strftime("%H:%M")
+            r["last"] = self.local(r["last"]).strftime("%H:%M")
+            r["cameras"] = (r.pop("cams") or "").split(",")
+        return rows
+
+    def last_seen(self) -> dict[str, dict]:
+        """Where and when each enrolled person was last recognised (the row with the newest time)."""
+        rows = self._query("SELECT person_id, MAX(ts) ts, camera_id FROM sightings GROUP BY person_id")
+        return {r["person_id"]: {"time": self.local(r["ts"]).strftime("%Y-%m-%d %H:%M"), "ts": r["ts"],
+                                 "camera_id": r["camera_id"]} for r in rows}
+
+    def last_sighting(self, person_id: str) -> dict | None:
+        rows = self._query("SELECT camera_id, ts FROM sightings WHERE person_id=? ORDER BY ts DESC LIMIT 1", (person_id,))
+        return rows[0] if rows else None
+
+    def forget_person(self, person_id: str) -> None:
+        self._exec("DELETE FROM sightings WHERE person_id=?", (person_id,))
 
     def add_report(self, day, kind, content):
         self._exec("INSERT INTO reports(ts,day,kind,content) VALUES (?,?,?,?)", (time.time(), day, kind, content))
@@ -90,9 +165,13 @@ class Database:
         cutoff = (self.local(time.time()) - timedelta(days=days)).strftime("%Y-%m-%d")
         n = 0
         with self._lock:
-            for t in ("crossings", "zone_visits", "occupancy", "alerts", "reports"):
+            for t in ("crossings", "zone_visits", "occupancy", "alerts", "reports", "sightings"):
                 n += self._conn.execute(f"DELETE FROM {t} WHERE day < ?", (cutoff,)).rowcount
             self._conn.commit()
+        if self.snap_dir.is_dir():   # alert pictures are kept for the same number of days
+            for folder in self.snap_dir.iterdir():
+                if folder.is_dir() and folder.name < cutoff:
+                    shutil.rmtree(folder, ignore_errors=True)
         return n
 
     # ---------- reads ----------
@@ -159,14 +238,20 @@ class Database:
             "SELECT zone_id, hour, COUNT(*) visits, ROUND(SUM(dwell_s)/60.0,1) total_minutes "
             "FROM zone_visits WHERE day=? GROUP BY zone_id, hour ORDER BY zone_id, hour", (day,))
 
-    def alerts(self, day: str | None = None, limit: int = 50) -> list[dict]:
+    def _alert_row(self, r: dict) -> dict:
+        r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M")
+        r["has_image"] = bool(r.pop("image", None))
+        r["seen"] = bool(r.get("seen"))
+        return r
+
+    def alerts(self, day: str | None = None, limit: int = 50, kind: str | None = None) -> list[dict]:
+        where, args = [], []
         if day:
-            rows = self._query("SELECT * FROM alerts WHERE day=? ORDER BY ts DESC LIMIT ?", (day, limit))
-        else:
-            rows = self._query("SELECT * FROM alerts ORDER BY ts DESC LIMIT ?", (limit,))
-        for r in rows:
-            r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M")
-        return rows
+            where.append("day=?"); args.append(day)
+        if kind:
+            where.append("kind LIKE ?"); args.append(kind + "%")
+        sql = "SELECT * FROM alerts" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY ts DESC LIMIT ?"
+        return [self._alert_row(r) for r in self._query(sql, (*args, limit))]
 
     def reports(self, limit: int = 20) -> list[dict]:
         rows = self._query("SELECT * FROM reports ORDER BY ts DESC LIMIT ?", (limit,))

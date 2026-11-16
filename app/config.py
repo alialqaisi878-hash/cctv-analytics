@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+PROVIDERS = ("", "greenapi", "ultramsg", "telegram", "webhook")
+
 DEFAULTS: dict[str, Any] = {
     "site_name": "My workplace",
     "demo": False,                  # True keeps the sample-video camera of old installs
@@ -21,14 +23,16 @@ DEFAULTS: dict[str, Any] = {
     },
     "privacy": {
         "show_notice": True,
-        "notice_text": (
-            "تنبيه: هذا المكان مراقب بالكاميرات لأغراض السلامة وتنظيم العمل. "
-            "يتم حفظ إحصائيات مجمّعة فقط (أعداد الدخول والخروج والازدحام)، "
-            "ولا يتم التعرف على الوجوه أو تحديد هوية الأشخاص."
-        ),
+        "notice_text": "",          # "" = written automatically from the settings below (see notice_text())
         "blur_people": True,        # blur heads in the live view
-        "retention_days": 30,       # delete aggregate events older than this
-        "store_snapshots": False,   # never save frames to disk unless enabled
+        "retention_days": 30,       # delete events and alert pictures older than this
+        "save_alert_pictures": True,  # keep one picture per alert (no video is ever saved)
+    },
+    "faces": {
+        "enabled": False,           # recognise the people enrolled on the "الأشخاص" page
+        "threshold": 0.40,          # similarity needed to call it a match (higher = stricter)
+        "interval_s": 0.5,          # seconds between face checks per camera
+        "present_minutes": 15,      # on the map, someone seen within this many minutes counts as "here now"
     },
     "working_hours": {
         "start": "08:00",
@@ -39,12 +43,26 @@ DEFAULTS: dict[str, Any] = {
         "after_hours_presence": True,
         "max_occupancy": 0,         # 0 = disabled; otherwise alert when exceeded
         "cooldown_minutes": 15,
+        "camera_offline": True,     # alert when a camera stops sending pictures
+        "unknown_after_hours": False,  # (face recognition) alert for unknown faces outside working hours
+    },
+    "notify": {                     # send alerts with their picture to WhatsApp / Telegram (see app/notify.py)
+        "provider": "",             # "" | greenapi | ultramsg | telegram | webhook (n8n...)
+        "instance": "",
+        "token": "",
+        "to": "",                   # WhatsApp number (07xx... or 9647xx...) or Telegram chat id
+        "api_url": "",              # only if the provider gave a special address
+        "send_images": True,
+        "kinds": [],                # [] = every alert; or e.g. ["after_hours", "person"]
+        "send_locations": False,    # webhook only: also send an event when an enrolled person shows up on another camera
     },
     "agent": {
         "model": "claude-opus-5-5",
         "language": "ar",
         "daily_report_time": "17:30",   # local time; "" disables the scheduled report
-        "api_key": "",                  # Claude API key (or set the ANTHROPIC_API_KEY environment variable)
+        "api_key": "",                  # Claude (sk-ant-...) or OpenAI (sk-...) key; the kind is detected
+        "provider": "auto",             # auto | claude | openai
+        "openai_model": "",             # "" = pick a current GPT model automatically
     },
     "server": {"host": "0.0.0.0", "port": 8000, "password": ""},
     "updates": {
@@ -141,6 +159,23 @@ def save_config(cfg: dict, path: str | Path) -> None:
     Path(path).write_text(yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
+def notice_text(cfg: dict) -> str:
+    """The camera notice shown in the program: written from the settings unless config.yaml sets its own."""
+    p = cfg["privacy"]
+    if p.get("notice_text"):
+        return p["notice_text"]
+    parts = ["تنبيه: هذا المكان مراقب بالكاميرات لأغراض السلامة وتنظيم العمل."]
+    if cfg["faces"]["enabled"]:
+        parts.append("يتم التعرف على وجوه الأشخاص المسجّلين في النظام فقط.")
+    else:
+        parts.append("لا يتم التعرف على الوجوه.")
+    if p.get("save_alert_pictures", True):
+        parts.append(f"تُحفظ صورة واحدة لكل تنبيه لمدة {p['retention_days']} يوم، ولا يُحفظ أي فيديو.")
+    else:
+        parts.append("لا تُحفظ أي صور أو فيديو، فقط إحصائيات مجمّعة.")
+    return " ".join(parts)
+
+
 def in_working_hours(cfg: dict, d) -> bool:
     """d: timezone-aware local datetime."""
     wh = cfg["working_hours"]
@@ -199,17 +234,42 @@ def _text(n: int):
     return lambda v: str(v).strip()[:n]
 
 
+def _choice(*options):
+    def check(v):
+        v = str(v or "").strip()
+        if v not in options:
+            raise ValueError(v)
+        return v
+    return check
+
+
+ALERT_KINDS = ("after_hours", "crowding", "offline", "person", "unknown")
+
+
+def _kinds(v) -> list[str]:
+    out = [str(x) for x in (v or [])]
+    if any(x not in ALERT_KINDS for x in out):
+        raise ValueError(v)
+    return out
+
+
 EDITABLE = {
     None: {"site_name": _text(80)},
     "working_hours": {"start": _required_time, "end": _required_time, "days": _days},
-    "privacy": {"retention_days": _int(1, 365), "blur_people": bool, "show_notice": bool},
-    "alerts": {"after_hours_presence": bool, "max_occupancy": _int(0, 1000), "cooldown_minutes": _int(1, 1440)},
-    "agent": {"daily_report_time": _time, "api_key": _text(300)},
+    "privacy": {"retention_days": _int(1, 365), "blur_people": bool, "show_notice": bool,
+                "save_alert_pictures": bool},
+    "alerts": {"after_hours_presence": bool, "max_occupancy": _int(0, 1000), "cooldown_minutes": _int(1, 1440),
+               "camera_offline": bool, "unknown_after_hours": bool},
+    "agent": {"daily_report_time": _time, "api_key": _text(300), "provider": _choice("auto", "claude", "openai"),
+              "openai_model": _text(60)},
+    "faces": {"enabled": bool, "threshold": _float(0.25, 0.8), "present_minutes": _int(1, 720)},
+    "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
+               "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},
     "server": {"password": _text(100)},
     "detector": {"process_fps": _int(1, 30), "confidence": _float(0.05, 0.95)},
     "updates": {"auto_install": bool},
 }
-SECRET = {("agent", "api_key"), ("server", "password")}
+SECRET = {("agent", "api_key"), ("server", "password"), ("notify", "token")}
 
 
 def read_settings(file: str | Path) -> dict:

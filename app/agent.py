@@ -1,14 +1,17 @@
 """AI analyst agent: answers questions and writes reports from the aggregate database.
 
-Uses the Claude API (tool runner) when ANTHROPIC_API_KEY is set. Without a key it
-falls back to a built-in rule-based report so the app still works offline.
-The agent only ever sees aggregate numbers - never video frames or identities.
+Works with a Claude API key (sk-ant-..., tool runner) or an OpenAI API key (sk-..., function calling);
+the kind of key is detected automatically. Without a key it falls back to a built-in report.
+The agent sees numbers and, when face recognition is on, the arrival/leaving times of enrolled
+people - never video frames.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+
+import httpx
 
 from .db import Database
 
@@ -17,17 +20,18 @@ log = logging.getLogger("cctv.agent")
 SYSTEM_PROMPT = """You are the analytics assistant for a workplace people-counting system at "{site}".
 You read aggregate, anonymous statistics through your tools: counts of people entering and leaving
 through doors (virtual lines), how many people were visible per hour, time spent in named zones,
-and alerts (after-hours presence, crowding).
+and alerts (after-hours presence, crowding, cameras offline, recognised people). If the owner turned on
+face recognition, get_attendance gives the first/last time each enrolled person was recognised.
 
 How to work:
 - Always call the tools to get real numbers before answering; never invent figures.
 - Write in {lang_name}, clearly and practically, for a business owner/manager. Use short headings and
   bullet points. Give concrete operational suggestions (staffing at peak hours, queue handling,
   opening hours, energy use, safety) that follow from the data.
-- Track IDs are temporary anonymous numbers from the tracker. They reset often and do not identify
-  anyone. Do not try to identify, single out, or profile individual employees, and do not draw
-  conclusions about a specific person's performance. If asked to, explain politely that the system
-  only measures aggregate activity, and offer the aggregate view instead.
+- Track IDs are temporary anonymous numbers from the tracker; they do not identify anyone.
+- Attendance times of enrolled people are facts you may report (arrived / left / not seen). Do not
+  judge a person's character or performance from them, and mention that a person can be missed if
+  their face was not visible to a camera.
 - Be honest about data quality: counts from cameras can be off by a few percent (occlusion, groups
   walking together). Point out anything that looks like a counting problem, e.g. many more "in" than
   "out" at day end, which usually means a line needs adjusting.
@@ -39,16 +43,37 @@ def _lang_name(code: str) -> str:
     return {"ar": "Arabic", "en": "English"}.get(code, code)
 
 
+OPENAI_PREFERRED = ("gpt-5.1", "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4o")
+
+
 class Analyst:
-    def __init__(self, db: Database, cfg: dict, client=None):
+    def __init__(self, db: Database, cfg: dict, client=None, openai_http: httpx.Client | None = None):
         self.db, self.cfg = db, cfg
         self._client = client  # injectable for tests
+        self._openai_http = openai_http
+        self.locations = None   # set by the server: () -> where each enrolled person was last seen
+        self._openai_model_cache: str | None = None
+
+    @property
+    def provider(self) -> str | None:
+        """'claude', 'openai' or None (no key)."""
+        a = self.cfg["agent"]
+        if self._client is not None:
+            return "claude"
+        key = (a.get("api_key") or "").strip()
+        if a.get("provider") in ("claude", "openai") and key:
+            return a["provider"]
+        if key:
+            return "claude" if key.startswith("sk-ant-") else "openai"
+        if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            return "claude"
+        if os.environ.get("OPENAI_API_KEY"):
+            return "openai"
+        return None
 
     @property
     def ai_enabled(self) -> bool:
-        return self._client is not None or bool(self.cfg["agent"].get("api_key")
-                                                 or os.environ.get("ANTHROPIC_API_KEY")
-                                                 or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+        return self.provider is not None
 
     # ---------- tools ----------
     def _tools(self):
@@ -105,6 +130,23 @@ class Analyst:
             return json.dumps(db.alerts(day), ensure_ascii=False)
 
         @beta_tool
+        def get_attendance(day: str) -> str:
+            """Face recognition (if turned on): first and last time each enrolled person was recognised
+            on a day, and on which cameras. Empty when face recognition is off or nobody was recognised.
+
+            Args:
+                day: Date as YYYY-MM-DD.
+            """
+            return json.dumps(db.attendance(day), ensure_ascii=False)
+
+        @beta_tool
+        def get_locations() -> str:
+            """Face recognition (if turned on): where each enrolled employee is now, meaning the camera
+            and floor-plan place that last recognised them, how many minutes ago, their job and ERP number.
+            "present" is true when they were seen recently. Use it for questions like "where is Ahmed?"."""
+            return json.dumps(self.locations() if self.locations else [], ensure_ascii=False)
+
+        @beta_tool
         def get_setup() -> str:
             """Camera, door-line and zone names configured in the system, plus working hours."""
             cams = [{"id": c["id"], "name": c["name"],
@@ -113,19 +155,37 @@ class Analyst:
                     for c in cfg["cameras"]]
             return json.dumps({"cameras": cams, "working_hours": cfg["working_hours"]}, ensure_ascii=False)
 
-        return [get_day_summary, get_hourly, get_daily_trend, get_zone_activity, get_alerts, get_setup]
+        return [get_day_summary, get_hourly, get_daily_trend, get_zone_activity, get_alerts, get_attendance, get_locations, get_setup]
+
+    def _openai_tools(self) -> tuple[list[dict], dict]:
+        """The same tools in OpenAI's function-calling format, with their Python functions."""
+        tools = self._tools()
+        specs, funcs = [], {}
+        for t in tools:
+            p = t.to_dict() if hasattr(t, "to_dict") else {"name": t.name, "description": t.description,
+                                                              "input_schema": t.input_schema}
+            specs.append({"type": "function", "function": {"name": p["name"], "description": p.get("description", ""),
+                                                           "parameters": p["input_schema"]}})
+            funcs[p["name"]] = t
+        return specs, funcs
 
     # ---------- public ----------
+    def _system(self) -> str:
+        wh = self.cfg["working_hours"]
+        return SYSTEM_PROMPT.format(site=self.cfg["site_name"], lang_name=_lang_name(self.cfg["agent"]["language"]),
+                                    today=self.db.today(), tz=self.cfg["timezone"],
+                                    wh=f"{wh['start']}-{wh['end']}, weekdays {wh['days']} (Mon=0)")
+
     def ask(self, question: str) -> str:
-        if not self.ai_enabled:
-            return ("المساعد الذكي غير مفعّل: ضع مفتاح Claude API في صفحة الإعدادات.\n\n"
+        provider = self.provider
+        if provider is None:
+            return ("المساعد الذكي غير مفعّل: ضع مفتاح Claude أو OpenAI في صفحة الإعدادات.\n\n"
                     + self.fallback_report(self.db.today()))
+        if provider == "openai":
+            return self._ask_openai(question)
         import anthropic
 
-        wh = self.cfg["working_hours"]
-        system = SYSTEM_PROMPT.format(site=self.cfg["site_name"], lang_name=_lang_name(self.cfg["agent"]["language"]),
-                                      today=self.db.today(), tz=self.cfg["timezone"],
-                                      wh=f"{wh['start']}-{wh['end']}, weekdays {wh['days']} (Mon=0)")
+        system = self._system()
         key = self.cfg["agent"].get("api_key")
         client = self._client or (anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic())
         try:
@@ -155,12 +215,80 @@ class Analyst:
             return "لم يتمكن الوكيل من الإجابة على هذا الطلب."
         return "\n".join(b.text for b in final.content if b.type == "text").strip()
 
+    # ---------- OpenAI ----------
+    def _openai(self) -> httpx.Client:
+        key = (self.cfg["agent"].get("api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
+        return self._openai_http or httpx.Client(base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                                                 headers={"Authorization": f"Bearer {key}"}, timeout=120)
+
+    def _openai_model(self, http: httpx.Client) -> str:
+        chosen = (self.cfg["agent"].get("openai_model") or "").strip()
+        if chosen:
+            return chosen
+        if self._openai_model_cache:
+            return self._openai_model_cache
+        model = OPENAI_PREFERRED[0]
+        try:
+            r = http.get("/models")
+            if r.status_code == 200:
+                have = {m["id"] for m in r.json().get("data", [])}
+                model = next((m for m in OPENAI_PREFERRED if m in have), None) or next(
+                    (m for m in sorted(have, reverse=True) if m.startswith("gpt-") and "audio" not in m
+                     and "realtime" not in m and "image" not in m and "transcribe" not in m and "tts" not in m), model)
+        except httpx.HTTPError:
+            pass
+        self._openai_model_cache = model
+        return model
+
+    def _ask_openai(self, question: str) -> str:
+        http = self._openai()
+        try:
+            specs, funcs = self._openai_tools()
+            model = self._openai_model(http)
+            messages = [{"role": "system", "content": self._system()}, {"role": "user", "content": question}]
+            for _ in range(12):
+                r = http.post("/chat/completions", json={"model": model, "messages": messages, "tools": specs})
+                if r.status_code == 401:
+                    return "مفتاح OpenAI غير صحيح. صحّحه في صفحة الإعدادات."
+                if r.status_code == 429:
+                    return "تجاوزت حد الطلبات أو الرصيد في حساب OpenAI. تأكد من الرصيد وحاول بعد دقيقة."
+                if r.status_code >= 400:
+                    try:
+                        msg = r.json().get("error", {}).get("message", r.text[:300])
+                    except ValueError:
+                        msg = r.text[:300]
+                    log.error("OpenAI error %s: %s", r.status_code, msg)
+                    return f"خطأ من OpenAI ({r.status_code}): {msg}"
+                choice = r.json()["choices"][0]
+                msg = choice["message"]
+                calls = msg.get("tool_calls") or []
+                if not calls:
+                    return (msg.get("content") or "").strip() or "لم يرجع OpenAI أي جواب."
+                messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+                for c in calls:
+                    fn = funcs.get(c["function"]["name"])
+                    try:
+                        args = json.loads(c["function"].get("arguments") or "{}")
+                        result = fn.call(args) if fn is not None and hasattr(fn, "call") else fn(**args) if fn else "unknown tool"
+                    except Exception as e:  # noqa: BLE001
+                        result = json.dumps({"error": str(e)})
+                    if not isinstance(result, str):
+                        result = json.dumps(result, ensure_ascii=False, default=str)
+                    messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+            return "توقف المساعد قبل ما يكمل الجواب. جرّب سؤال أبسط."
+        except httpx.HTTPError:
+            return "تعذر الاتصال بـ OpenAI (تحقق من الإنترنت).\n\n" + self.fallback_report(self.db.today())
+        finally:
+            if http is not self._openai_http:
+                http.close()
+
     def daily_report(self, day: str | None = None) -> str:
         day = day or self.db.today()
         if self.ai_enabled:
             text = self.ask(
                 f"اكتب التقرير اليومي ليوم {day}: ملخص الدخول والخروج لكل باب، ساعات الذروة، "
-                f"نشاط المناطق ومدة البقاء، التنبيهات، مقارنة مع الأيام السبعة الماضية، "
+                f"نشاط المناطق ومدة البقاء، التنبيهات، الحضور (إذا التعرف على الوجه مفعّل)، "
+                f"مقارنة مع الأيام السبعة الماضية، "
                 f"وثلاث توصيات عملية. اجعل التقرير مختصراً وواضحاً.")
         else:
             text = self.fallback_report(day)
@@ -189,6 +317,10 @@ class Analyst:
             lines.append("\n## المناطق")
             for z in zones:
                 lines.append(f"- {z['zone_id']}: {z['visits']} زيارة، متوسط البقاء {z['avg_dwell_s']} ثانية")
+        att = self.db.attendance(day)
+        if att:
+            lines.append("\n## الحضور (التعرف على الوجه)")
+            lines += [f"- {a['name']}: أول ظهور {a['first']}، آخر ظهور {a['last']}" for a in att]
         if alerts:
             lines.append(f"\n## التنبيهات ({len(alerts)})")
             lines += [f"- {a['time']}: {a['message']}" for a in alerts[:10]]
