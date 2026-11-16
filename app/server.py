@@ -197,9 +197,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     def frame(cam_id: str):
         """Latest analysed picture of a camera (the dashboard refreshes it a few times per second)."""
         w = core.workers.get(cam_id)
-        if w:
-            w.viewed_at = time.time()     # someone watches: send the live picture at full speed
-        jpg = w.latest_jpeg() if w else None
+        jpg = w.live_jpeg() if w else None      # someone watches: the newest picture, made now
         if jpg is None:
             raise HTTPException(404, "no picture yet")
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
