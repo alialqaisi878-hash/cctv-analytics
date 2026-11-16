@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import discovery
@@ -117,7 +117,9 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
 
     @api.get("/")
     def index():
-        return FileResponse(STATIC / "index.html")
+        # never let the app window keep an old page after an update
+        html = (STATIC / "index.html").read_text(encoding="utf-8").replace("__PAGE_VERSION__", __version__)
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
     @api.get("/api/info")
     def info():
@@ -195,9 +197,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
     def frame(cam_id: str):
         """Latest analysed picture of a camera (the dashboard refreshes it a few times per second)."""
         w = core.workers.get(cam_id)
-        if w:
-            w.viewed_at = time.time()     # someone watches: send the live picture at full speed
-        jpg = w.latest_jpeg() if w else None
+        jpg = w.live_jpeg() if w else None      # someone watches: the newest picture, made now
         if jpg is None:
             raise HTTPException(404, "no picture yet")
         return Response(jpg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})

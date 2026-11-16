@@ -186,6 +186,23 @@ def rtsp_describe(ip: str, port: int, path: str, user: str, password: str, timeo
         return 0
 
 
+def sub_stream_url(url: str) -> str | None:
+    """The camera's lighter second stream (usually 640x360 to 704x576), or None when the address is not
+    one we know. Decoding it costs a fraction of the main 4-8 MP stream, so the live view stays smooth."""
+    rules = [
+        (r"(/Streaming/Channels/\d+)01(\b|$)", r"\g<1>02\2"),             # Hikvision / HiLook
+        (r"(subtype=)0\b", r"\g<1>1"),                                   # Dahua / Imou
+        (r"(/unicast/c\d+/s)0(/live)", r"\g<1>1\2"),                      # Uniview
+        (r"(:\d+/)stream1$", r"\g<1>stream2"),                            # TP-Link Tapo / VIGI
+        (r"(_)main$", r"\g<1>sub"),                                       # Reolink
+    ]
+    for pat, rep in rules:
+        new, n = re.subn(pat, rep, url, count=1)
+        if n and new != url:
+            return new
+    return None
+
+
 def find_stream(ip: str, port: int, user: str, password: str, channel: int = 1) -> dict:
     """Find the working video address of a camera. Stops at the first wrong-login answer, so a
     mistyped password costs one attempt (cameras lock the account after several)."""

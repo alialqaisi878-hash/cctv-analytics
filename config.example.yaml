@@ -7,7 +7,7 @@ database: "data/cctv.db"
 
 detector:
   model: "yolo11n.pt"     # n = fastest. Use yolo11s.pt for better accuracy on a stronger PC/GPU
-  confidence: 0.35
+  confidence: 0.5
   process_fps: 8          # analysed frames per second per camera (lower = less CPU)
   imgsz: 640
   device: null            # null = auto, "cpu", or "0" for the first NVIDIA GPU

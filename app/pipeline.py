@@ -15,11 +15,13 @@ import numpy as np  # noqa: E402
 from .analytics import LineCounter, ZoneTracker
 from .config import in_working_hours
 from .db import Database
+from .discovery import sub_stream_url
 
 log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
+MIN_PERSON_H = 0.04    # boxes smaller than this part of the picture height are ignored
+CONFIRM_HITS = 3       # analysed pictures in a row before something counts as a person
 VIEW_WIDTH = 1280      # pictures shown/saved are scaled down to this width (cameras often send 4-8 MP)
-VIEW_FPS = 10          # live picture rate while someone watches it
 
 
 class CameraWorker(threading.Thread):
@@ -50,17 +52,25 @@ class CameraWorker(threading.Thread):
         self._still_here: dict[str, float] = {}   # person id -> last time a sighting was written for this camera
         self._offline_since: float | None = None
         self._was_online = False
+        self._hits: dict[int, int] = {}         # track id -> times seen (a person counts after CONFIRM_HITS)
         self._tracks: list = []                 # latest tracks, used to mark the live picture between analyses
         self._frame: tuple | None = None        # (seq, frame) newest picture from the camera (reader thread)
         self._frame_ready = threading.Event()
         self.viewed_at = 0.0                    # last time the dashboard asked for the live picture
-        self._last_view = 0.0
+        self._view_seq = 0                      # frame number of the live picture last made
+        self._view_lock = threading.Lock()
+        self.stream = ""                        # "sub" (light stream) or "main"
+        self._opened_for = ""
+        self._no_sub = ""
+        self.size = ""                          # e.g. "704x576"
+        self.read_fps = 0.0                     # pictures per second arriving from the camera
 
     # ---------- public ----------
     def snapshot(self) -> dict:
         return {
             "id": self.id, "name": self.cam["name"], "status": self.status, "fps": round(self.fps, 1),
-            "people_now": self.people_now,
+            "people_now": self.people_now, "stream": self.stream, "size": self.size,
+            "read_fps": round(self.read_fps, 1),
             "lines": [{"id": l.line_id, "name": c["name"], "in": l.count_in, "out": l.count_out}
                       for l, c in zip(self.lines, self.cam["lines"])],
             "zones": [{"id": z.zone_id, "name": c["name"], "occupancy": z.occupancy}
@@ -70,6 +80,22 @@ class CameraWorker(threading.Thread):
     def latest_jpeg(self) -> bytes | None:
         with self.lock:
             return self.jpeg
+
+    def live_jpeg(self) -> bytes | None:
+        """The newest camera picture for someone watching. Made here, on request, and not in the thread
+        that reads the camera, so reading never slows down and pictures never pile up behind."""
+        self.viewed_at = time.time()
+        got = self._frame
+        if got is None:
+            return self.latest_jpeg()
+        with self._view_lock:
+            if got[0] != self._view_seq:
+                jpg = self._render(got[1], self._tracks, mark_only=True)
+                if jpg:
+                    with self.lock:
+                        self.jpeg = jpg
+                self._view_seq = got[0]
+        return self.latest_jpeg()
 
     def latest_raw(self) -> np.ndarray | None:
         with self.lock:
@@ -83,10 +109,43 @@ class CameraWorker(threading.Thread):
         from ultralytics import YOLO  # imported lazily: heavy
         self._model = YOLO(self.cfg["detector"]["model"])
 
+    def _want_stream(self) -> str:
+        return self.cfg["detector"].get("stream", "fast")
+
+    @staticmethod
+    def _capture(src):
+        """Open a stream, letting the graphics card decode it when it can (much less CPU)."""
+        if isinstance(src, str) and "://" in src:
+            params = [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]   # falls back to the CPU by itself
+            if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                params += [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000]
+            try:
+                return cv2.VideoCapture(src, cv2.CAP_FFMPEG, params)
+            except (cv2.error, AttributeError, TypeError):
+                pass
+        return cv2.VideoCapture(src)
+
     def _open(self):
         src = self.cam["source"]
         src = int(src) if isinstance(src, int) or (isinstance(src, str) and src.isdigit()) else src
-        cap = cv2.VideoCapture(src)
+        tries = [("main", src)]
+        self._opened_for = self._want_stream()
+        if isinstance(src, str) and src.startswith("rtsp") and self._want_stream() == "fast":
+            sub = sub_stream_url(src)
+            if sub and sub != self._no_sub:
+                tries.insert(0, ("sub", sub))
+        cap = None
+        for kind, url in tries:
+            cap = self._capture(url)
+            if cap.isOpened():
+                self.stream = kind
+                w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                self.size = f"{w}x{h}" if w and h else ""
+                log.info("camera %s: %s stream %s", self.id, kind, self.size)
+                break
+            cap.release()
+            if kind == "sub":
+                self._no_sub = url          # this camera has no second stream: don't wait for it again
         if isinstance(src, str) and src.startswith("rtsp"):
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         return cap
@@ -182,7 +241,10 @@ class CameraWorker(threading.Thread):
         alive.set()
 
         def reader():
-            seq = 0
+            # only reads: anything slower here makes the camera's pictures queue up and the view lag
+            seq, t_prev = 0, time.time()
+            src = str(self.cam["source"])
+            has_sub = src.startswith("rtsp") and sub_stream_url(src) is not None
             while alive.is_set() and not self.stop_event.is_set():
                 ok, frame = cap.read()
                 if not ok:
@@ -191,14 +253,10 @@ class CameraWorker(threading.Thread):
                 self._frame = (seq, frame)
                 self._frame_ready.set()
                 now = time.time()
-                if now - self.viewed_at < 3 and now - self._last_view >= 1.0 / VIEW_FPS:
-                    self._last_view = now
-                    try:
-                        jpg = self._render(frame, self._tracks, mark_only=True)
-                        with self.lock:
-                            self.jpeg = jpg
-                    except Exception:  # noqa: BLE001 - never stop reading because of the live picture
-                        log.exception("live picture failed")
+                self.read_fps = 0.9 * self.read_fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
+                t_prev = now
+                if seq % 50 == 0 and has_sub and self._want_stream() != self._opened_for:
+                    break               # the quality setting changed: reconnect with the other stream
             alive.clear()
             self._frame_ready.set()
 
@@ -237,12 +295,21 @@ class CameraWorker(threading.Thread):
         res = self._model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[PERSON],
                                 conf=det["confidence"], imgsz=det["imgsz"], device=det.get("device"),
                                 verbose=False)[0]
-        tracks = []
+        tracks, now_ids = [], set()
         if res.boxes is not None and res.boxes.id is not None:
             for box, tid in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.id.int().cpu().tolist()):
                 x1, y1, x2, y2 = box
+                bw, bh = x2 - x1, y2 - y1
+                # a person is taller than wide (standing or sitting) and not a speck: drops chairs, bags, shadows
+                if bh < MIN_PERSON_H * h or bh < 0.8 * bw:
+                    continue
+                now_ids.add(tid)
+                self._hits[tid] = self._hits.get(tid, 0) + 1
+                if self._hits[tid] < CONFIRM_HITS:
+                    continue                    # seen once is not enough: wait until it is seen again
                 foot = ((x1 + x2) / 2 / w, y2 / h)  # bottom-centre = where the person stands
                 tracks.append((tid, (x1, y1, x2, y2), foot))
+        self._hits = {t: n for t, n in self._hits.items() if t in now_ids}
         self.people_now = len(tracks)
         if ts - self._last_raw >= 1.0:
             self._last_raw = ts

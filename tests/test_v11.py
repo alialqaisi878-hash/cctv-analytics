@@ -109,7 +109,8 @@ def test_notice_follows_settings(cfg):
     assert "المسجّلين" in notice_text(cfg)
 
 
-def test_alert_saved_with_marked_picture(cfg):
+def test_alert_saved_with_marked_picture(cfg, monkeypatch):
+    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
     from app.db import Database
     from app.pipeline import CameraWorker
     from tests.test_integration import FakeModel
@@ -155,7 +156,8 @@ def test_enroll_and_recognise(tmp_path, engine_models):
     assert e.remove(p["id"]) and not e.people
 
 
-def test_pipeline_names_person_and_alerts(cfg, tmp_path, engine_models):
+def test_pipeline_names_person_and_alerts(cfg, tmp_path, engine_models, monkeypatch):
+    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
     from app.db import Database
     from app.pipeline import CameraWorker
     e = _engine(tmp_path, engine_models)
@@ -387,7 +389,8 @@ def test_floor_maps_and_places(tmp_path):
     assert fm.remove(m["id"]) and fm.where("cam2") is None and fm.image(m["id"]) is None
 
 
-def test_location_sent_to_webhook_when_person_moves(cfg, tmp_path, engine_models):
+def test_location_sent_to_webhook_when_person_moves(cfg, tmp_path, engine_models, monkeypatch):
+    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
     import json as _json
     from app.db import Database
     from app.floormap import FloorMaps
@@ -507,12 +510,11 @@ def test_live_camera_never_lags_and_shows_fast(cfg):
         orig(frame, ts)
     w._process = process
     w_cam = Cam()
-    w.viewed_at = time.time() + 60          # someone is watching the whole time
     shots = []
     t = threading.Thread(target=w._loop, args=(w_cam,))
     t.start()
     while t.is_alive():
-        j = w.latest_jpeg()
+        j = w.live_jpeg()                   # someone is watching the whole time
         if j and (not shots or shots[-1] is not j):
             shots.append(j)
         time.sleep(0.02)
@@ -526,3 +528,77 @@ def test_live_camera_never_lags_and_shows_fast(cfg):
     img = cv2.imdecode(np.frombuffer(shots[-1], np.uint8), cv2.IMREAD_COLOR)
     assert img.shape[1] == VIEW_WIDTH
     assert w._analysed_jpeg is not None
+    # making the live picture never slowed down reading the camera (25 a second)
+    assert w.read_fps > 18, w.read_fps
+
+
+def test_page_is_never_cached_and_knows_its_version(cfg):
+    """After an update the app window must load the new page, not keep the old one."""
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    from app.version import __version__
+    c = TestClient(create_app(cfg, start_cameras=False))
+    r = c.get("/")
+    assert "no-store" in r.headers["cache-control"]
+    assert f'const PAGE_VERSION = "{__version__}"' in r.text and "__PAGE_VERSION__" not in r.text
+    assert "data-view-cam" in r.text
+
+
+def test_light_stream_is_used_and_falls_back_to_the_main_one(cfg):
+    from app.db import Database
+    from app.discovery import sub_stream_url
+    from app.pipeline import CameraWorker
+    assert sub_stream_url("rtsp://u:p@10.0.0.5:554/Streaming/Channels/101") == "rtsp://u:p@10.0.0.5:554/Streaming/Channels/102"
+    assert sub_stream_url("rtsp://u:p@10.0.0.5:554/cam/realmonitor?channel=2&subtype=0").endswith("channel=2&subtype=1")
+    assert sub_stream_url("rtsp://u:p@10.0.0.5:554/h264Preview_01_main").endswith("h264Preview_01_sub")
+    assert sub_stream_url("rtsp://u:p@10.0.0.5:554/h264") is None
+
+    class Cap:
+        def __init__(self, ok): self.ok = ok
+        def isOpened(self): return self.ok
+        def get(self, prop): return {cv2.CAP_PROP_FRAME_WIDTH: 704, cv2.CAP_PROP_FRAME_HEIGHT: 576}.get(prop, 0)
+        def set(self, *a): return True
+        def release(self): pass
+
+    main = "rtsp://u:p@10.0.0.5:554/Streaming/Channels/101"
+    w = CameraWorker(dict(cfg["cameras"][0], source=main), cfg, Database(cfg["database"], cfg["timezone"]))
+    opened = []
+    w._capture = lambda url: (opened.append(url), Cap(True))[1]
+    w._open()
+    assert opened == [main.replace("101", "102")] and w.stream == "sub" and w.size == "704x576"
+    assert w.snapshot()["stream"] == "sub"
+
+    opened.clear()                                  # camera without a second stream: the main one
+    w._capture = lambda url: (opened.append(url), Cap(url == main))[1]
+    w._open()
+    assert opened == [main.replace("101", "102"), main] and w.stream == "main"
+    opened.clear()                                  # and it does not wait for the missing stream again
+    w._open()
+    assert opened == [main]
+
+    opened.clear()                                  # owner asked for full quality
+    cfg["detector"]["stream"] = "high"
+    w._open()
+    assert opened == [main] and w.stream == "main"
+
+
+def test_things_that_are_not_people_are_ignored(cfg):
+    """Small specks, wide objects and a box seen only once are not counted or drawn as people."""
+    from app.db import Database
+    from app.pipeline import CameraWorker, CONFIRM_HITS
+    from tests.test_integration import _Res
+
+    boxes = [[10, 10, 14, 15],          # a speck
+             [100, 300, 400, 400],      # wide: a desk, a car, a shadow
+             [500, 100, 560, 400]]      # a person
+    class M:
+        def track(self, frame, **kw):
+            return [_Res(boxes, [1, 2, 3])]
+    cfg["alerts"]["after_hours_presence"] = False
+    w = CameraWorker(cfg["cameras"][0], cfg, Database(cfg["database"], cfg["timezone"]))
+    w._model = M()
+    frame = np.zeros((480, 640, 3), np.uint8)
+    for i in range(CONFIRM_HITS):
+        w._process(frame, time.time())
+        assert w.people_now == (1 if i == CONFIRM_HITS - 1 else 0)
+    assert [t[0] for t in w._tracks] == [3]

@@ -16,8 +16,9 @@ DEFAULTS: dict[str, Any] = {
     "database": "data/cctv.db",
     "detector": {
         "model": "yolo11n.pt",      # downloaded automatically on first run
-        "confidence": 0.35,
+        "confidence": 0.5,          # how sure the detector must be that it sees a person
         "process_fps": 8,           # frames analysed per second per camera
+        "stream": "fast",           # fast = the camera's light second stream when it has one, high = full quality
         "imgsz": 640,
         "device": None,             # None = auto (GPU if available), or "cpu", "0"
     },
@@ -93,6 +94,8 @@ def load_config(path: str | Path) -> dict:
     # settings changed in the program live in their own file, so config.yaml keeps its comments
     cfg["_settings_file"] = str(path.parent / "data" / "settings.yaml")
     cfg = _merge(cfg, read_settings(cfg["_settings_file"]))
+    if cfg["detector"].get("confidence") == 0.35:   # the old default marked things that are not people
+        cfg["detector"]["confidence"] = 0.5
     if not cfg["demo"]:   # the sample video of early versions is no longer shown
         cfg["cameras"] = [c for c in cfg["cameras"] if not (c.get("id") == "demo" and "samples/" in str(c.get("source")))]
     # cameras added from the dashboard live in their own file, so config.yaml keeps its comments
@@ -266,7 +269,7 @@ EDITABLE = {
     "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
                "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},
     "server": {"password": _text(100)},
-    "detector": {"process_fps": _int(1, 30), "confidence": _float(0.05, 0.95)},
+    "detector": {"process_fps": _int(1, 30), "confidence": _float(0.05, 0.95), "stream": _choice("fast", "high")},
     "updates": {"auto_install": bool},
 }
 SECRET = {("agent", "api_key"), ("server", "password"), ("notify", "token")}

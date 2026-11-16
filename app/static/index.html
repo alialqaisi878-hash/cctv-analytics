@@ -300,8 +300,9 @@
           <div class="field"><label>جرّب الإرسال بعد الحفظ<small id="n-state"></small></label><button class="btn ghost small" id="n-test">أرسل رسالة تجربة</button></div>
         </div>
         <div class="card"><h2>الأداء</h2>
+          <div class="field"><label for="s-stream">جودة بث الكاميرات<small>"سريع" يستخدم البث الثاني الخفيف للكاميرا: صورة سلسة وضغط أقل بكثير على الحاسبة</small></label><select id="s-stream"><option value="fast">سريع (ينصح به)</option><option value="high">جودة عالية (أبطأ)</option></select></div>
           <div class="field"><label for="s-fps">عدد الصور المحللة بالثانية لكل كاميرا<small>أقل = ضغط أقل على الحاسبة</small></label><input type="number" id="s-fps" min="1" max="30"></div>
-          <div class="field"><label for="s-conf">حساسية كشف الأشخاص<small>من 0.05 إلى 0.95. أقل = يكشف أكثر</small></label><input type="number" id="s-conf" min="0.05" max="0.95" step="0.05"></div>
+          <div class="field"><label for="s-conf">حساسية كشف الأشخاص<small>من 0.05 إلى 0.95. أعلى = أدق وما يأخذ أشياء مو أشخاص، أقل = يكشف أكثر بس يغلط أكثر. المقترح 0.5</small></label><input type="number" id="s-conf" min="0.05" max="0.95" step="0.05"></div>
         </div>
         <div class="card"><h2>الحماية والتحديثات</h2>
           <div class="field"><label for="s-pass">كلمة مرور للبرنامج<small id="s-pass-state"></small></label><input type="password" id="s-pass" autocomplete="new-password"></div>
@@ -382,6 +383,7 @@
 <div id="print-area"></div>
 
 <script>
+const PAGE_VERSION = "__PAGE_VERSION__";   // filled in by the server
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const j = async (url, opts) => {
@@ -431,6 +433,7 @@ function pump(img) {
   const next = () => {
     if (!img.isConnected) return;
     if (img.parentElement.offsetParent === null) { setTimeout(next, 600); return; }   // hidden page or closed dialog
+    if (img.id !== "vw-img" && $("dlg-view").open) { setTimeout(next, 600); return; } // the big view gets the full speed
     const probe = new Image();
     probe.onload = () => { img.src = probe.src; img.hidden = false; setTimeout(next, 60); };
     probe.onerror = () => setTimeout(next, 1500);
@@ -448,6 +451,12 @@ function chart(id, cfg) {
 
 async function loadInfo() {
   const i = await j("/api/info");
+  // an app window can still hold the page of an older version after an update: load the new one
+  if (i.version !== PAGE_VERSION) {
+    let again = true;
+    try { again = !sessionStorage.getItem("reloaded-" + i.version); sessionStorage.setItem("reloaded-" + i.version, "1"); } catch (_) { again = false; }
+    if (again) { location.reload(); return; }
+  }
   today = i.today;
   if (!$("day").value) $("day").value = today;
   if (!$("rep-day").value) $("rep-day").value = today;
@@ -503,6 +512,7 @@ async function loadCams() {
     document.querySelectorAll(`[data-pill="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = statusPill(c));
     document.querySelectorAll(`[data-counts="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = `<span>دخول <b>${tin}</b></span><span>خروج <b>${tout}</b></span>`);
     document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.textContent = c.status === "online" ? `${c.people_now ?? 0} بالصورة الآن` : "");
+    document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.title = c.size ? `${c.stream === "sub" ? "بث خفيف" : "بث كامل"} ${c.size} · ${c.read_fps} صورة/ثانية` : "");
   }
   $("k-now").textContent = now;
 }
@@ -875,7 +885,7 @@ async function loadSettings() {
   $("n-state").textContent = info.notify && info.notify.last_error ? "آخر خطأ: " + info.notify.last_error : "";
   $("s-rep").value = s.agent.daily_report_time;
   $("s-blur").checked = s.privacy.blur_people; $("s-notice").checked = s.privacy.show_notice; $("s-ret").value = s.privacy.retention_days;
-  $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence;
+  $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence; $("s-stream").value = s.detector.stream || "fast";
   $("s-pass").value = ""; $("s-pass-state").textContent = s.server.has_password ? "مفعّلة. اكتب كلمة جديدة لتغييرها" : "اختياري: يطلبها البرنامج عند الفتح";
   $("s-auto").checked = s.updates.auto_install; $("set-state").textContent = "";
 }
@@ -890,7 +900,7 @@ $("save").onclick = async () => {
     faces: {enabled: $("s-faces").checked, threshold: $("s-thr").value},
     notify: {provider: $("n-prov").value, instance: $("n-inst").value, to: $("n-to").value, api_url: $("n-url").value, send_images: $("n-img").checked, send_locations: $("n-loc").checked,
              kinds: [...document.querySelectorAll("#n-kinds input:checked")].map(i => i.value)},
-    detector: {process_fps: $("s-fps").value, confidence: $("s-conf").value},
+    detector: {process_fps: $("s-fps").value, confidence: $("s-conf").value, stream: $("s-stream").value},
     server: {}, updates: {auto_install: $("s-auto").checked},
   };
   if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
