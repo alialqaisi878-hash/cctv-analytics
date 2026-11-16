@@ -52,7 +52,7 @@
   .cams { display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:14px; }
   .cam { background:var(--card2); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
   .cam .pic { background:#000; aspect-ratio:16/9; display:grid; place-items:center; color:var(--muted); font-size:13px; }
-  .cam .pic img { width:100%; height:100%; object-fit:contain; display:block; }
+  .cam .pic img { width:100%; height:100%; object-fit:contain; display:block; } .cam .pic[data-view-cam] { cursor:zoom-in; }
   .cam .info { padding:10px 12px; display:grid; gap:8px; }
   .cam .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .cam .name { font-weight:700; } .cam .st { color:var(--muted); font-size:13px; }
@@ -332,6 +332,12 @@
   <div class="acts"><button class="btn" id="l-ok">حفظ الخط</button><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="l-inv"> اعكس الاتجاه</label><button class="btn ghost" id="l-reset">ارسم من جديد</button><button class="btn ghost" data-close>إغلاق</button></div>
 </dialog>
 
+<dialog id="dlg-view" class="wide" style="width:min(1500px,97vw)">
+  <h3 id="vw-title"></h3>
+  <div id="vw-box" style="background:#000;border-radius:10px;line-height:0"><img id="vw-img" class="bigpic" style="max-height:78vh" alt=""></div>
+  <div class="acts"><button class="btn ghost" id="vw-full">ملء الشاشة</button><button class="btn ghost" data-close>إغلاق</button></div>
+</dialog>
+
 <dialog id="dlg-alert" class="wide">
   <h3 id="ad-title"></h3>
   <div class="muted" id="ad-meta" style="margin-bottom:10px"></div>
@@ -426,7 +432,7 @@ function pump(img) {
     if (!img.isConnected) return;
     if (img.parentElement.offsetParent === null) { setTimeout(next, 600); return; }   // hidden page or closed dialog
     const probe = new Image();
-    probe.onload = () => { img.src = probe.src; img.hidden = false; setTimeout(next, 180); };
+    probe.onload = () => { img.src = probe.src; img.hidden = false; setTimeout(next, 60); };
     probe.onerror = () => setTimeout(next, 1500);
     probe.src = `/frame/${encodeURIComponent(img.dataset.cam)}?t=${Date.now()}`;
   };
@@ -462,12 +468,19 @@ const statusPill = (c) => c.status === "online" ? `<span class="pill ok"><i></i>
   : c.status === "disabled" ? `<span class="pill"><i></i>متوقفة</span>` : `<span class="pill bad"><i></i>غير متصلة</span>`;
 
 function camCard(c, manage) {
-  return `<div class="cam"><div class="pic"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
+  return `<div class="cam"><div class="pic" data-view-cam="${esc(c.id)}" title="اضغط للتكبير"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
     <div class="info"><div class="row"><span class="name">${esc(c.name)}</span><span data-pill="${esc(c.id)}"></span></div>
     <div class="row"><span class="counts" data-counts="${esc(c.id)}"></span><span class="st" data-st="${esc(c.id)}"></span></div>
     ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
     </div></div>`;
 }
+
+function openView(id) {
+  const img = $("vw-img"); img.dataset.cam = id; img.removeAttribute("src");
+  $("vw-title").textContent = camName(id); $("dlg-view").showModal(); pump(img);
+}
+document.addEventListener("click", e => { const v = e.target.closest("[data-view-cam]"); if (v) openView(v.dataset.viewCam); });
+$("vw-full").onclick = () => { const b = $("vw-box"); (b.requestFullscreen ? b.requestFullscreen() : Promise.reject()).catch(() => {}); };
 
 let lastCams = [];
 async function loadCams() {
@@ -623,7 +636,7 @@ async function openAlert(id) {
   $("ad-meta").innerHTML = `<span class="kind ${esc(r.kind)}">${esc(KIND[r.kind] || r.kind)}</span> · <span class="ltr">${esc(r.time)}</span> · ${esc(camName(r.camera_id))}`;
   $("ad-img").hidden = !r.has_image; $("ad-noimg").hidden = r.has_image; $("ad-dl").hidden = !r.has_image;
   if (r.has_image) { $("ad-img").src = `/api/alerts/${id}/image`; $("ad-dl").href = `/api/alerts/${id}/image`; $("ad-dl").download = `alert-${id}.jpg`; }
-  $("ad-live").onclick = () => { $("dlg-alert").close(); show("home"); };
+  $("ad-live").onclick = () => { $("dlg-alert").close(); openView(r.camera_id); };
   $("dlg-alert").showModal();
   if (!r.seen) { r.seen = true; document.querySelectorAll(`[data-alert="${id}"]`).forEach(e => e.classList.remove("unseen")); try { setBadge((await post("/api/alerts/seen", {ids:[id]})).unseen); } catch (_) {} }
 }
