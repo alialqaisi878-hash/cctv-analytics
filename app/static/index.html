@@ -142,6 +142,7 @@
 
   <main>
     <div class="banner update" id="update" hidden></div>
+    <div class="banner" id="offline" hidden style="background:#3a1d1d;border:1px solid #6b2c2c;color:#f6d0cf"><span>انقطع الاتصال بالبرنامج، فالمعلومات اللي بالصفحة مو محدّثة. إذا ما رجع خلال دقيقة، سدّ هذه النافذة وافتح البرنامج من جديد.</span><button class="btn small ghost" onclick="location.reload()">إعادة المحاولة</button></div>
 
     <!-- ===== الرئيسية ===== -->
     <section class="view on" id="v-home">
@@ -629,7 +630,7 @@ async function openAlert(id) {
 // new alerts: popup + sound + Windows notification
 function beep() { try { const c = new AudioContext(), o = c.createOscillator(), g = c.createGain(); o.connect(g); g.connect(c.destination); o.frequency.value = 880; g.gain.setValueAtTime(.15, c.currentTime); g.gain.exponentialRampToValueAtTime(.001, c.currentTime + .6); o.start(); o.stop(c.currentTime + .6); } catch (_) {} }
 async function pollAlerts() {
-  if (lastAlertId === null) return;
+  if (lastAlertId === null) { await loadInfo(); return; }
   const r = await j(`/api/alerts/feed?after=${lastAlertId}`);
   setBadge(r.unseen);
   if (!r.alerts.length) return;
@@ -935,7 +936,9 @@ window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/win
   await loadInfo(); await Promise.all([loadCams(), loadStats()]);
   setInterval(() => loadCams().catch(() => {}), 2000);
   setInterval(() => { if (view === "home") loadStats().catch(() => {}); }, 15000);
-  setInterval(() => pollAlerts().catch(() => {}), 4000);
+  let fails = 0;
+  setInterval(() => pollAlerts().then(() => { if (fails) { fails = 0; $("offline").hidden = true; } })
+    .catch(() => { if (++fails >= 3) $("offline").hidden = false; }), 4000);
   setInterval(() => { if (view === "map" && !mapEdit && !document.querySelector("dialog[open]")) loadMap().catch(() => {}); }, 8000);
   loadUpdate().catch(() => {}); setInterval(() => loadUpdate().catch(() => {}), 60000);
 })();
