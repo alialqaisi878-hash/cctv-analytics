@@ -526,3 +526,15 @@ def test_live_camera_never_lags_and_shows_fast(cfg):
     img = cv2.imdecode(np.frombuffer(shots[-1], np.uint8), cv2.IMREAD_COLOR)
     assert img.shape[1] == VIEW_WIDTH
     assert w._analysed_jpeg is not None
+
+
+def test_page_is_never_cached_and_knows_its_version(cfg):
+    """After an update the app window must load the new page, not keep the old one."""
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    from app.version import __version__
+    c = TestClient(create_app(cfg, start_cameras=False))
+    r = c.get("/")
+    assert "no-store" in r.headers["cache-control"]
+    assert f'const PAGE_VERSION = "{__version__}"' in r.text and "__PAGE_VERSION__" not in r.text
+    assert "data-view-cam" in r.text

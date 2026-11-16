@@ -382,6 +382,7 @@
 <div id="print-area"></div>
 
 <script>
+const PAGE_VERSION = "__PAGE_VERSION__";   // filled in by the server
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const j = async (url, opts) => {
@@ -448,6 +449,12 @@ function chart(id, cfg) {
 
 async function loadInfo() {
   const i = await j("/api/info");
+  // an app window can still hold the page of an older version after an update: load the new one
+  if (i.version !== PAGE_VERSION) {
+    let again = true;
+    try { again = !sessionStorage.getItem("reloaded-" + i.version); sessionStorage.setItem("reloaded-" + i.version, "1"); } catch (_) { again = false; }
+    if (again) { location.reload(); return; }
+  }
   today = i.today;
   if (!$("day").value) $("day").value = today;
   if (!$("rep-day").value) $("rep-day").value = today;
