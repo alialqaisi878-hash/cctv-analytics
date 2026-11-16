@@ -20,8 +20,16 @@ from .discovery import sub_stream_url
 log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
 MIN_PERSON_H = 0.04    # boxes smaller than this part of the picture height are ignored
-CONFIRM_HITS = 3       # analysed pictures in a row before something counts as a person
+PRESENCE_WINDOW = 3    # people in view = the middle value of the last 3 analyses (one-off misses and ghosts drop out)
 VIEW_WIDTH = 1280      # pictures shown/saved are scaled down to this width (cameras often send 4-8 MP)
+
+
+def _iou(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
 
 
 class CameraWorker(threading.Thread):
@@ -52,7 +60,9 @@ class CameraWorker(threading.Thread):
         self._still_here: dict[str, float] = {}   # person id -> last time a sighting was written for this camera
         self._offline_since: float | None = None
         self._was_online = False
-        self._hits: dict[int, int] = {}         # track id -> times seen (a person counts after CONFIRM_HITS)
+        self._raw_boxes: list = []              # this picture's detections before tracking (set by a model callback)
+        self._counts: list[int] = []            # people found in the last few analyses
+        self._stats_at = time.time()
         self._tracks: list = []                 # latest tracks, used to mark the live picture between analyses
         self._frame: tuple | None = None        # (seq, frame) newest picture from the camera (reader thread)
         self._frame_ready = threading.Event()
@@ -108,6 +118,15 @@ class CameraWorker(threading.Thread):
     def _load_model(self):
         from ultralytics import YOLO  # imported lazily: heavy
         self._model = YOLO(self.cfg["detector"]["model"])
+        # keep the plain detections too: the tracker hides a person until it has matched them twice, which never
+        # happens when someone walks fast past a busy PC (few analyses a second), so presence must not depend on it
+        def keep_raw(predictor):
+            try:
+                b = predictor.results[0].boxes
+                self._raw_boxes = list(zip(b.xyxy.cpu().numpy().tolist(), b.conf.cpu().numpy().tolist()))
+            except Exception:  # noqa: BLE001 - an older/newer library: fall back to the tracker's boxes
+                self._raw_boxes = []
+        self._model.add_callback("on_predict_postprocess_end", keep_raw)   # added before the tracker's: runs first
 
     def _want_stream(self) -> str:
         return self.cfg["detector"].get("stream", "fast")
@@ -292,25 +311,33 @@ class CameraWorker(threading.Thread):
     def _process(self, frame: np.ndarray, ts: float):
         det = self.cfg["detector"]
         h, w = frame.shape[:2]
+        self._raw_boxes = []
         res = self._model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[PERSON],
                                 conf=det["confidence"], imgsz=det["imgsz"], device=det.get("device"),
                                 verbose=False)[0]
-        tracks, now_ids = [], set()
+
+        def person_like(x1, y1, x2, y2):
+            # a person is taller than wide (standing or sitting) and not a speck: drops chairs, bags, shadows
+            bw, bh = x2 - x1, y2 - y1
+            return bh >= MIN_PERSON_H * h and bh >= 0.8 * bw
+
+        tracks = []                             # followed people (with an id): used for lines, zones and faces
         if res.boxes is not None and res.boxes.id is not None:
             for box, tid in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.id.int().cpu().tolist()):
-                x1, y1, x2, y2 = box
-                bw, bh = x2 - x1, y2 - y1
-                # a person is taller than wide (standing or sitting) and not a speck: drops chairs, bags, shadows
-                if bh < MIN_PERSON_H * h or bh < 0.8 * bw:
-                    continue
-                now_ids.add(tid)
-                self._hits[tid] = self._hits.get(tid, 0) + 1
-                if self._hits[tid] < CONFIRM_HITS:
-                    continue                    # seen once is not enough: wait until it is seen again
-                foot = ((x1 + x2) / 2 / w, y2 / h)  # bottom-centre = where the person stands
-                tracks.append((tid, (x1, y1, x2, y2), foot))
-        self._hits = {t: n for t, n in self._hits.items() if t in now_ids}
-        self.people_now = len(tracks)
+                x1, y1, x2, y2 = (float(v) for v in box)
+                if person_like(x1, y1, x2, y2):
+                    foot = ((x1 + x2) / 2 / w, y2 / h)  # bottom-centre = where the person stands
+                    tracks.append((tid, (x1, y1, x2, y2), foot))
+        # everyone the detector sees, even before the tracker has an id for them (so they are counted and blurred)
+        shown = list(tracks)
+        for (x1, y1, x2, y2), conf in self._raw_boxes:
+            if conf >= det["confidence"] and person_like(x1, y1, x2, y2) and \
+                    not any(_iou((x1, y1, x2, y2), t[1]) > 0.3 for t in tracks):
+                shown.append((None, (x1, y1, x2, y2), ((x1 + x2) / 2 / w, y2 / h)))
+        self._counts = (self._counts + [len(shown)])[-PRESENCE_WINDOW:]
+        # the middle value (the lower one of two): a box in one picture only is not a person
+        self.people_now = sorted(self._counts)[(len(self._counts) - 1) // 2] if len(self._counts) > 1 else 0
+        self._log_stats(ts)
         if ts - self._last_raw >= 1.0:
             self._last_raw = ts
             with self.lock:
@@ -335,8 +362,8 @@ class CameraWorker(threading.Thread):
             self._last_occ_write = ts
             self.db.add_occupancy(ts, self.id, self.people_now)
         self._check_alerts(ts)
-        self._tracks = tracks
-        jpg = self._render(frame, tracks)
+        self._tracks = shown
+        jpg = self._render(frame, shown)
         with self.lock:
             if not (time.time() - self.viewed_at < 3 and self._frame is not None):
                 self.jpeg = jpg                 # the reader thread keeps the live picture while it is watched
@@ -427,6 +454,14 @@ class CameraWorker(threading.Thread):
                 self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self._analysed_jpeg, self._meta(pid))
         self._pending.clear()
 
+    def _log_stats(self, ts: float) -> None:
+        """Once a minute: what this camera is doing, so a problem on the owner's PC can be read from app.log."""
+        if ts - self._stats_at < 60:
+            return
+        self._stats_at = ts
+        log.info("camera %s: %s stream %s, reading %.1f/s, analysing %.1f/s, people %d",
+                 self.id, self.stream or "-", self.size or "-", self.read_fps, self.fps, self.people_now)
+
     def _check_alerts(self, ts: float):
         al = self.cfg["alerts"]
         if al["after_hours_presence"] and self.people_now > 0 and not self._in_working_hours(ts):
@@ -472,7 +507,8 @@ class CameraWorker(threading.Thread):
             if who:
                 _label(frame, who["name"], (x1, max(y1 - 4, 18)), color)
             else:
-                cv2.putText(frame, f"#{tid}", (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                if tid is not None:
+                    cv2.putText(frame, f"#{tid}", (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         for zc, z in zip(self.cam["zones"], self.zones):
             pts = np.array([P(p) for p in zc["points"]], np.int32)
             overlay = frame.copy()

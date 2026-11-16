@@ -109,8 +109,7 @@ def test_notice_follows_settings(cfg):
     assert "المسجّلين" in notice_text(cfg)
 
 
-def test_alert_saved_with_marked_picture(cfg, monkeypatch):
-    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
+def test_alert_saved_with_marked_picture(cfg):
     from app.db import Database
     from app.pipeline import CameraWorker
     from tests.test_integration import FakeModel
@@ -126,7 +125,8 @@ def test_alert_saved_with_marked_picture(cfg, monkeypatch):
 
     w = CameraWorker(cfg["cameras"][0], cfg, db, notifier=N())
     w._model = FakeModel()
-    w._process(np.zeros((480, 640, 3), np.uint8), time.time())
+    for _ in range(2):                         # a person counts once seen in two analyses
+        w._process(np.zeros((480, 640, 3), np.uint8), time.time())
     a = db.alerts(db.today())
     assert len(a) == 1 and a[0]["kind"] == "after_hours" and a[0]["has_image"]
     assert db.alert_image(a[0]["id"]).read_bytes()[:2] == b"\xff\xd8"
@@ -156,8 +156,7 @@ def test_enroll_and_recognise(tmp_path, engine_models):
     assert e.remove(p["id"]) and not e.people
 
 
-def test_pipeline_names_person_and_alerts(cfg, tmp_path, engine_models, monkeypatch):
-    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
+def test_pipeline_names_person_and_alerts(cfg, tmp_path, engine_models):
     from app.db import Database
     from app.pipeline import CameraWorker
     e = _engine(tmp_path, engine_models)
@@ -389,8 +388,7 @@ def test_floor_maps_and_places(tmp_path):
     assert fm.remove(m["id"]) and fm.where("cam2") is None and fm.image(m["id"]) is None
 
 
-def test_location_sent_to_webhook_when_person_moves(cfg, tmp_path, engine_models, monkeypatch):
-    monkeypatch.setattr("app.pipeline.CONFIRM_HITS", 1)   # one picture is enough here
+def test_location_sent_to_webhook_when_person_moves(cfg, tmp_path, engine_models):
     import json as _json
     from app.db import Database
     from app.floormap import FloorMaps
@@ -583,26 +581,31 @@ def test_light_stream_is_used_and_falls_back_to_the_main_one(cfg):
 
 
 def test_things_that_are_not_people_are_ignored(cfg):
-    """Small specks, wide objects and a box seen only once are not counted or drawn as people."""
+    """Specks and wide objects are never people; a box seen in one picture only is not counted."""
     from app.db import Database
-    from app.pipeline import CameraWorker, CONFIRM_HITS
+    from app.pipeline import CameraWorker
     from tests.test_integration import _Res
 
-    boxes = [[10, 10, 14, 15],          # a speck
-             [100, 300, 400, 400],      # wide: a desk, a car, a shadow
-             [500, 100, 560, 400]]      # a person
+    person = [500, 100, 560, 400]
+    frames = [[[10, 10, 14, 15], [100, 300, 400, 400], person],  # a speck, a wide desk (never people), a ghost
+              [[10, 10, 14, 15], [100, 300, 400, 400]],
+              [[10, 10, 14, 15]],
+              [person], [person], [person]]                      # the person, for real
     class M:
+        i = 0
         def track(self, frame, **kw):
-            return [_Res(boxes, [1, 2, 3])]
+            b = frames[M.i]; M.i += 1
+            return [_Res(b, list(range(1, len(b) + 1)))]
     cfg["alerts"]["after_hours_presence"] = False
     w = CameraWorker(cfg["cameras"][0], cfg, Database(cfg["database"], cfg["timezone"]))
     w._model = M()
     frame = np.zeros((480, 640, 3), np.uint8)
-    for i in range(CONFIRM_HITS):
+    seen = []
+    for _ in frames:
         w._process(frame, time.time())
-        assert w.people_now == (1 if i == CONFIRM_HITS - 1 else 0)
-    assert [t[0] for t in w._tracks] == [3]
-
+        seen.append(w.people_now)
+    assert seen == [0, 0, 0, 0, 1, 1], seen
+    assert [t[1] for t in w._tracks] == [tuple(float(v) for v in person)]
 
 def test_api_key_typed_in_the_model_box_is_moved_to_the_key(cfg):
     from app.config import apply_settings, load_config
@@ -620,3 +623,27 @@ def test_api_key_typed_in_the_model_box_is_moved_to_the_key(cfg):
     _sh.copy("tests/demo-config.yaml", d / "config.yaml")
     (d / "data" / "settings.yaml").write_text(yaml.safe_dump({"agent": {"openai_model": "sk-proj-abc"}}), encoding="utf-8")
     assert load_config(d / "config.yaml")["agent"]["openai_model"] == ""
+
+
+def test_person_counted_and_alerted_before_the_tracker_follows_them(cfg):
+    """Someone walking fast past a busy PC: the tracker never gives them an id, but they are still
+    counted, blurred and alerted on (Ali walked past a camera and got no alert in 1.1.3)."""
+    from app.db import Database
+    from app.pipeline import CameraWorker
+    from tests.test_integration import _Res
+    cfg["alerts"]["after_hours_presence"] = True
+    cfg["working_hours"]["days"] = []
+    db = Database(cfg["database"], cfg["timezone"])
+    w = CameraWorker(cfg["cameras"][0], cfg, db)
+
+    class M:
+        x = 0
+        def track(self, frame, **kw):
+            M.x += 120                                   # a big jump between analyses: no id from the tracker
+            w._raw_boxes = [([M.x, 100, M.x + 60, 400], 0.9)]
+            return [_Res([], [])]
+    w._model = M()
+    for _ in range(3):
+        w._process(np.zeros((480, 640, 3), np.uint8), time.time())
+    assert w.people_now == 1 and w._tracks and w._tracks[0][0] is None
+    assert [a["kind"] for a in db.alerts(db.today())] == ["after_hours"]
