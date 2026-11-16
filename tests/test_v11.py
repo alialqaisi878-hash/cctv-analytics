@@ -469,3 +469,60 @@ def test_api_map_and_locations(cfg, tmp_path, engine_models):
     assert c.post("/api/settings", json={"notify": {"send_locations": True}, "faces": {"present_minutes": 30}}).status_code == 200
     assert c.delete(f"/api/maps/{m['id']}").status_code == 200
     assert c.get("/api/locations").json()["people"][0]["location"] is None
+
+
+# ---------- live picture: no lag, scaled down, fast while watched ----------
+def test_live_camera_never_lags_and_shows_fast(cfg):
+    import threading
+    from app.db import Database
+    from app.pipeline import CameraWorker, VIEW_WIDTH
+
+    class Cam:
+        """A 4K camera at 25 pictures a second; each picture carries its number in the first pixel."""
+        def __init__(self):
+            self.n = 0
+        def read(self):
+            time.sleep(0.04)
+            self.n += 1
+            f = np.zeros((2160, 3840, 3), np.uint8)
+            f[0, 0, 0] = self.n % 256
+            f[0, 0, 1] = self.n // 256
+            return (self.n <= 150), f
+
+    class Slow:
+        """Analysis slower than the camera (0.3 s per picture, like a busy CPU)."""
+        def track(self, frame, **kw):
+            time.sleep(0.3)
+            from tests.test_integration import _Res
+            return [_Res([[1000, 500, 1400, 1800]], [1])]
+
+    cam = dict(cfg["cameras"][0], source="rtsp://test/stream")
+    cfg["alerts"]["after_hours_presence"] = False
+    w = CameraWorker(cam, cfg, Database(cfg["database"], cfg["timezone"]))
+    w._model = Slow()
+    seen = []
+    orig = w._process
+    def process(frame, ts):
+        seen.append((int(frame[0, 0, 1]) * 256 + int(frame[0, 0, 0]), w_cam.n))
+        orig(frame, ts)
+    w._process = process
+    w_cam = Cam()
+    w.viewed_at = time.time() + 60          # someone is watching the whole time
+    shots = []
+    t = threading.Thread(target=w._loop, args=(w_cam,))
+    t.start()
+    while t.is_alive():
+        j = w.latest_jpeg()
+        if j and (not shots or shots[-1] is not j):
+            shots.append(j)
+        time.sleep(0.02)
+    t.join()
+    # the analysis always got the newest picture: never more than a couple of pictures behind the camera
+    assert len(seen) >= 5 and all(cam_n - got <= 2 for got, cam_n in seen), seen
+    # pictures were skipped instead of queued up
+    assert seen[-1][0] - seen[0][0] > len(seen)
+    # the live picture changed far more often than the analysis ran, and is scaled down
+    assert len(shots) > 2 * len(seen), (len(shots), len(seen))
+    img = cv2.imdecode(np.frombuffer(shots[-1], np.uint8), cv2.IMREAD_COLOR)
+    assert img.shape[1] == VIEW_WIDTH
+    assert w._analysed_jpeg is not None

@@ -18,6 +18,8 @@ from .db import Database
 
 log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
+VIEW_WIDTH = 1280      # pictures shown/saved are scaled down to this width (cameras often send 4-8 MP)
+VIEW_FPS = 10          # live picture rate while someone watches it
 
 
 class CameraWorker(threading.Thread):
@@ -29,6 +31,7 @@ class CameraWorker(threading.Thread):
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.jpeg: bytes | None = None
+        self._analysed_jpeg: bytes | None = None    # marked picture of the last analysed frame (alerts)
         self.status = "starting"
         self.fps = 0.0
         self.people_now = 0
@@ -47,6 +50,11 @@ class CameraWorker(threading.Thread):
         self._still_here: dict[str, float] = {}   # person id -> last time a sighting was written for this camera
         self._offline_since: float | None = None
         self._was_online = False
+        self._tracks: list = []                 # latest tracks, used to mark the live picture between analyses
+        self._frame: tuple | None = None        # (seq, frame) newest picture from the camera (reader thread)
+        self._frame_ready = threading.Event()
+        self.viewed_at = 0.0                    # last time the dashboard asked for the live picture
+        self._last_view = 0.0
 
     # ---------- public ----------
     def snapshot(self) -> dict:
@@ -137,6 +145,8 @@ class CameraWorker(threading.Thread):
         return not src.isdigit() and "://" not in src
 
     def _loop(self, cap):
+        if not self._is_file():
+            return self._loop_live(cap)
         det = self.cfg["detector"]
         target_dt = 1.0 / max(det["process_fps"], 1)
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 25
@@ -164,6 +174,62 @@ class CameraWorker(threading.Thread):
             now = time.time()
             self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
             t_prev = now
+
+    def _loop_live(self, cap):
+        """Cameras: one thread reads every frame as it arrives (so pictures never queue up and lag
+        behind), shows the newest to whoever watches, and the analysis takes the newest when it is free."""
+        alive = threading.Event()
+        alive.set()
+
+        def reader():
+            seq = 0
+            while alive.is_set() and not self.stop_event.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                seq += 1
+                self._frame = (seq, frame)
+                self._frame_ready.set()
+                now = time.time()
+                if now - self.viewed_at < 3 and now - self._last_view >= 1.0 / VIEW_FPS:
+                    self._last_view = now
+                    try:
+                        jpg = self._render(frame, self._tracks, mark_only=True)
+                        with self.lock:
+                            self.jpeg = jpg
+                    except Exception:  # noqa: BLE001 - never stop reading because of the live picture
+                        log.exception("live picture failed")
+            alive.clear()
+            self._frame_ready.set()
+
+        t = threading.Thread(target=reader, daemon=True, name=f"read-{self.id}")
+        t.start()
+        target_dt = 1.0 / max(self.cfg["detector"]["process_fps"], 1)
+        last_seq, t_prev = 0, time.time()
+        try:
+            while alive.is_set() and not self.stop_event.is_set():
+                self._frame_ready.wait(5)
+                self._frame_ready.clear()
+                got = self._frame
+                if got is None or got[0] == last_seq:
+                    if not alive.is_set():
+                        break
+                    continue
+                last_seq, frame = got
+                t0 = time.time()
+                self._offline_since = None
+                self._was_online = True
+                self._process(frame, t0)
+                elapsed = time.time() - t0
+                if elapsed < target_dt:
+                    self.stop_event.wait(target_dt - elapsed)
+                now = time.time()
+                self.fps = 0.9 * self.fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
+                t_prev = now
+        finally:
+            alive.clear()
+            t.join(timeout=5)
+            self._frame = None
 
     def _process(self, frame: np.ndarray, ts: float):
         det = self.cfg["detector"]
@@ -202,7 +268,12 @@ class CameraWorker(threading.Thread):
             self._last_occ_write = ts
             self.db.add_occupancy(ts, self.id, self.people_now)
         self._check_alerts(ts)
-        self._annotate(frame, tracks)
+        self._tracks = tracks
+        jpg = self._render(frame, tracks)
+        with self.lock:
+            if not (time.time() - self.viewed_at < 3 and self._frame is not None):
+                self.jpeg = jpg                 # the reader thread keeps the live picture while it is watched
+            self._analysed_jpeg = jpg
         self._flush_alerts(ts)
 
     # ---------- face recognition (only people enrolled by the owner) ----------
@@ -280,13 +351,13 @@ class CameraWorker(threading.Thread):
         """Save the alerts of this frame together with its (marked) picture."""
         if not self._pending:
             return
-        jpg = self.latest_jpeg() if self.cfg["privacy"].get("save_alert_pictures", True) else None
+        jpg = self._analysed_jpeg if self.cfg["privacy"].get("save_alert_pictures", True) else None
         for kind, msg, pid in self._pending:
             self.db.add_alert(ts, self.id, kind.split(":", 1)[0], msg, jpg, pid)
             log.info("ALERT %s %s: %s", self.id, kind, msg)
             if self.notifier:
                 t = self.db.local(ts).strftime("%H:%M")
-                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self.latest_jpeg(), self._meta(pid))
+                self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self._analysed_jpeg, self._meta(pid))
         self._pending.clear()
 
     def _check_alerts(self, ts: float):
@@ -298,6 +369,23 @@ class CameraWorker(threading.Thread):
 
     def _in_working_hours(self, ts: float) -> bool:
         return in_working_hours(self.cfg, self.db.local(ts))
+
+    def _render(self, frame: np.ndarray, tracks, mark_only: bool = False) -> bytes:
+        """The picture people see: scaled down, people boxed (heads blurred) and the lines/zones drawn.
+        mark_only: a newer frame than the tracks (live view), so blur a little wider to cover movement."""
+        h, w = frame.shape[:2]
+        k = min(1.0, VIEW_WIDTH / w)
+        small = cv2.resize(frame, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA) if k < 1 else frame.copy()
+        if k < 1 or mark_only:
+            pad = 0.12 if mark_only else 0.0
+            scaled = []
+            for tid, (x1, y1, x2, y2), foot in tracks:
+                bw, bh = (x2 - x1) * pad, (y2 - y1) * pad
+                scaled.append((tid, ((x1 - bw) * k, (y1 - bh) * k, (x2 + bw) * k, (y2 + bh) * k), foot))
+            tracks = scaled
+        self._annotate(small, tracks)
+        ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return buf.tobytes() if ok else b""
 
     def _annotate(self, frame: np.ndarray, tracks):
         h, w = frame.shape[:2]
@@ -339,10 +427,6 @@ class CameraWorker(threading.Thread):
             cv2.putText(frame, f"{lc.line_id} IN {lc.count_in} / OUT {lc.count_out}", (a[0], max(a[1] - 10, 15)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
         cv2.putText(frame, f"people: {len(tracks)}", (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-        if ok:
-            with self.lock:
-                self.jpeg = buf.tobytes()
 
 
 _FONT = None
