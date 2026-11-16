@@ -239,7 +239,7 @@ class Database:
             "FROM zone_visits WHERE day=? GROUP BY zone_id, hour ORDER BY zone_id, hour", (day,))
 
     def _alert_row(self, r: dict) -> dict:
-        r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M")
+        r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M") if r.get("ts") else (r.get("day") or "")
         r["has_image"] = bool(r.pop("image", None))
         r["seen"] = bool(r.get("seen"))
         return r
@@ -256,7 +256,7 @@ class Database:
     def reports(self, limit: int = 20) -> list[dict]:
         rows = self._query("SELECT * FROM reports ORDER BY ts DESC LIMIT ?", (limit,))
         for r in rows:
-            r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M")
+            r["time"] = self.local(r["ts"]).strftime("%Y-%m-%d %H:%M") if r.get("ts") else (r.get("day") or "")
         return rows
 
     def crossings_csv_rows(self, day: str) -> list[dict]:

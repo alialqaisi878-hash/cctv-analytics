@@ -412,6 +412,8 @@ function show(v) {
   if (v === "people") loadPeople();
   if (v === "map") loadMap();
 }
+// any failure that would otherwise leave a page silently empty is shown to the user
+window.addEventListener("unhandledrejection", e => { const m = e.reason && e.reason.message; if (m && !/fetch/i.test(m)) toast("صار خطأ: " + m); });
 document.addEventListener("click", e => { const g = e.target.closest("[data-goto]"); if (g) show(g.dataset.goto); });
 document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest("dialog").close());
 
@@ -599,7 +601,10 @@ const camName = (id) => (lastCams.find(c => c.id === id) || {}).name || id;
 async function loadAlerts() {
   if (!$("al-day").value && !loadAlerts.all) $("al-day").value = today;
   const q = new URLSearchParams({limit: 200}); if ($("al-day").value) q.set("day", $("al-day").value); if ($("al-kind").value) q.set("kind", $("al-kind").value);
-  const a = await j(`/api/alerts?${q}`);
+  if (!$("al-list").children.length) $("al-list").innerHTML = `<tr><td colspan="5" class="muted">جاري التحميل...</td></tr>`;
+  let a;
+  try { a = await j(`/api/alerts?${q}`); }
+  catch (e) { $("al-list").innerHTML = `<tr><td colspan="5" class="err">تعذر جلب التنبيهات: ${esc(e.message)}</td></tr>`; return; }
   a.forEach(r => alertCache[r.id] = r);
   $("al-list").innerHTML = a.length ? a.map(r => `<tr class="click${r.seen ? "" : " unseen"}" data-alert="${r.id}">
       <td>${r.has_image ? `<img class="thumb" loading="lazy" src="/api/alerts/${r.id}/image" alt="">` : ""}</td>
