@@ -545,7 +545,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         if core.detector is not None:
             d = core.detector.snapshot()
             lines.append(f"shared detector: {d['status']}, {d['rate']} pictures/s for all cameras, busy {int(d['busy'] * 100)}%, "
-                         f"{d['batch']} at a time, waiting {d['waiting']}" + (f", last error: {d['error']}" if d["error"] else ""))
+                         f"{d['batch']} at a time ({d['batch_s']} s each), waiting {d['waiting']}" + (f", last error: {d['error']}" if d["error"] else ""))
         lines += ["", f"cameras ({len(cfg['cameras'])}):"]
         for cam in list(cfg["cameras"]):
             w = core.workers.get(cam["id"])

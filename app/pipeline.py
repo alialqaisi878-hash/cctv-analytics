@@ -22,6 +22,7 @@ log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
 MIN_PERSON_H = 0.04    # boxes smaller than this part of the picture height are ignored
 HOLD_S = 3.0           # a person the detector misses for a moment still counts for this long
+QUIET_S = 30.0          # a camera where nothing moves and nobody is seen is still analysed this often
 GHOST_S = 600          # things seen weakly and never accepted are remembered this long (so they are not "new" again)
 VIEW_WIDTH = 1280      # pictures shown/saved are scaled down to this width (cameras often send 4-8 MP)
 
@@ -90,6 +91,7 @@ class CameraWorker(threading.Thread):
         self._tracks: list = []                 # latest tracks, used to mark the live picture between analyses
         self._frame: tuple | None = None        # (seq, frame) newest picture from the camera (reader thread)
         self._frame_ready = threading.Event()
+        self._need_frame = threading.Event()    # the analysis is waiting for a picture
         self.viewed_at = 0.0                    # last time the dashboard asked for the live picture
         self._view_seq = 0                      # frame number of the live picture last made
         self._view_lock = threading.Lock()
@@ -157,11 +159,20 @@ class CameraWorker(threading.Thread):
     def _want_stream(self) -> str:
         return self.cfg["detector"].get("stream", "fast")
 
-    @staticmethod
-    def _capture(src):
+    def _decode_threads(self) -> int:
+        """Threads for decoding this camera's stream (0 = as many as the processor has). With many cameras,
+        each decoder taking every core made the cameras and the detector fight over the processor."""
+        n = self.cfg["detector"].get("decode_threads")
+        if n is not None:
+            return int(n)
+        return 1 if len(self.cfg.get("cameras", [])) >= 6 else 0
+
+    def _capture(self, src):
         """Open a stream, letting the graphics card decode it when it can (much less CPU)."""
         if isinstance(src, str) and "://" in src:
             params = [cv2.CAP_PROP_HW_ACCELERATION, cv2.VIDEO_ACCELERATION_ANY]   # falls back to the CPU by itself
+            if hasattr(cv2, "CAP_PROP_N_THREADS"):
+                params += [cv2.CAP_PROP_N_THREADS, self._decode_threads()]
             if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
                 params += [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000]
             try:
@@ -245,13 +256,13 @@ class CameraWorker(threading.Thread):
             log.exception("camera %s: analysis error (%d so far)", self.id, self.errors)
 
     def _priority(self, moving) -> float:
-        """How much this camera needs the detector now: movement and people first, quiet cameras now and then."""
-        p = 0.0
-        if moving is None or float(moving.mean()) > 0.002:    # something moves (or the whole picture changed)
-            p += 3
+        """How urgently this camera needs the detector: people in view most, then movement, quiet cameras least
+        (they still get their turn: the detector also counts how long each camera has waited)."""
         if any(s.ok for s in self._seen):                       # people in view: keep following them
-            p += 2
-        return p + (min((time.time() - self.analysed_at) / 5, 2) if self.analysed_at else 5)
+            return 8.0
+        if moving is None or float(moving.mean()) > 0.002:      # something moves (or the whole picture changed)
+            return 4.0
+        return 1.0
 
     def _analyse(self, frame: np.ndarray, ts: float) -> bool:
         """One picture through the analysis; an error in one picture never stops the camera.
@@ -260,7 +271,10 @@ class CameraWorker(threading.Thread):
             moving = self._moving(frame)
             dets = None
             if self.detector is not None and self._model is None:
-                dets = self.detector.detect(self.id, frame, self._priority(moving))
+                weight = self._priority(moving)
+                if weight <= 1.0 and self.analysed_at and ts - self.analysed_at < QUIET_S:
+                    return False                # nothing moves and nobody is here: leave the detector to others
+                dets = self.detector.detect(self.id, frame, weight, self.analysed_at or None)
                 if dets is None:
                     return False
             self._process(frame, ts, dets, moving)
@@ -334,10 +348,25 @@ class CameraWorker(threading.Thread):
             seq, t_prev = 0, time.time()
             src = str(self.cam["source"])
             has_sub = src.startswith("rtsp") and sub_stream_url(src) is not None
+            can_grab = hasattr(cap, "grab") and hasattr(cap, "retrieve")
             while alive.is_set() and not self.stop_event.is_set():
-                ok, frame = cap.read()
-                if not ok:
-                    break
+                if can_grab:
+                    # every frame must be taken from the camera, but turning it into a picture costs processor
+                    # time: only when the analysis waits for one or someone is watching
+                    if not cap.grab():
+                        break
+                    now = time.time()
+                    if not (self._need_frame.is_set() or now - self.viewed_at < 3 or self._frame is None):
+                        self.read_fps = 0.9 * self.read_fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
+                        t_prev = now
+                        continue
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        continue
+                else:
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
                 seq += 1
                 self._frame = (seq, frame)
                 self._frame_ready.set()
@@ -355,6 +384,7 @@ class CameraWorker(threading.Thread):
         last_seq, t_prev = 0, time.time()
         try:
             while alive.is_set() and not self.stop_event.is_set():
+                self._need_frame.set()
                 self._frame_ready.wait(5)
                 self._frame_ready.clear()
                 got = self._frame
@@ -362,12 +392,15 @@ class CameraWorker(threading.Thread):
                     if not alive.is_set():
                         break
                     continue
+                self._need_frame.clear()
                 last_seq, frame = got
                 t0 = time.time()
                 self._offline_since = None
                 self._was_online = True
                 if not self._analyse(frame, t0):
-                    continue                    # the shared detector was busy with other cameras: take the newest
+                    # quiet, or the shared detector was busy with other cameras: look again at a newer picture
+                    self.stop_event.wait(max(target_dt, 0.25))
+                    continue
                 elapsed = time.time() - t0
                 if elapsed < target_dt:
                     self.stop_event.wait(target_dt - elapsed)
@@ -376,6 +409,7 @@ class CameraWorker(threading.Thread):
                 t_prev = now
         finally:
             alive.clear()
+            self._need_frame.clear()
             t.join(timeout=5)
             self._frame = None
 

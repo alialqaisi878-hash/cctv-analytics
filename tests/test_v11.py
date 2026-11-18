@@ -811,3 +811,109 @@ def test_app_cameras_share_one_detector(cfg):
     for w in ws:
         w.stop()
     core.detector.stop()
+
+
+# ---------- 1.1.8: a slow PC never throws its work away ----------
+def test_slow_detector_still_delivers_and_shrinks_its_batch(cfg):
+    """On Ali's PC one batch of 8 took ~16 s, longer than a camera waited (3 s), so every result was thrown
+    away. A picture already being analysed is now always waited for, and the batch shrinks to stay ~1 s."""
+    import threading
+    from app.detector import SharedDetector
+
+    class Slow:
+        def predict(self, frames, **kw):
+            time.sleep(0.6 * len(frames))               # 0.6 s a picture: a batch of 8 would take 4.8 s
+            return [type("R", (), {"boxes": None})() for _ in frames]
+
+    d = SharedDetector(cfg, model=Slow())
+    d.max_batch = 8
+    d.batch = 8
+    got = {}
+
+    def ask(i):
+        f = np.zeros((10, 10, 3), np.uint8)
+        got[i] = d.detect(f"c{i}", f, 1.0, None, timeout=0.5)
+
+    ts = [threading.Thread(target=ask, args=(i,)) for i in range(8)]
+    with d._cond:
+        for t in ts:
+            t.start()
+        while len(d._pending) < 8:
+            d._cond.wait(0.01)
+    for t in ts:
+        t.join(20)
+    assert all(got.get(i) == [] for i in range(8)), got     # nothing thrown away although it took 4.8 s
+    assert d.batch == 1 and d.batch_s > 4                   # 0.6 s a picture: one at a time keeps it ~1 s
+    d.stop()
+
+
+def test_quiet_camera_still_gets_its_turn(cfg):
+    """Busy cameras climb faster, but a camera that waited long enough goes before a busy one just analysed."""
+    import threading
+    from app.detector import SharedDetector
+
+    order = []
+
+    class Model:
+        def predict(self, frames, **kw):
+            order.extend(int(f[0, 0, 0]) for f in frames)
+            return [type("R", (), {"boxes": None})() for _ in frames]
+
+    d = SharedDetector(cfg, model=Model(), batch=1)
+    now = time.time()
+
+    def ask(cam, weight, since):
+        f = np.zeros((10, 10, 3), np.uint8)
+        f[0, 0, 0] = cam
+        d.detect(f"c{cam}", f, weight, since)
+
+    ts = [threading.Thread(target=ask, args=a) for a in ((1, 8.0, now - 0.5), (2, 1.0, now - 30))]
+    with d._cond:
+        for t in ts:
+            t.start()
+        while len(d._pending) < 2:
+            d._cond.wait(0.01)
+    for t in ts:
+        t.join(5)
+    assert order == [2, 1]          # quiet for 30 s (1 x 30) beats busy but just seen (8 x 0.5)
+    d.stop()
+
+
+def test_many_cameras_decode_light_and_only_make_pictures_when_needed(cfg):
+    """32 cameras decoding at full speed left no processor for the detector: each stream decodes on one
+    thread, and a frame becomes a picture only when the analysis wants one or someone is watching."""
+    import threading
+    from app.db import Database
+    from app.pipeline import CameraWorker
+
+    cfg["cameras"] = [dict(cfg["cameras"][0], id=f"c{i}") for i in range(32)]
+    cam = dict(cfg["cameras"][0], source="rtsp://test/stream")
+    w = CameraWorker(cam, cfg, Database(cfg["database"], cfg["timezone"]))
+    assert w._decode_threads() == 1
+    cfg["cameras"] = cfg["cameras"][:2]
+    assert w._decode_threads() == 0
+
+    class Cam:
+        def __init__(self):
+            self.grabs = self.made = 0
+        def grab(self):
+            time.sleep(0.01)
+            self.grabs += 1
+            return self.grabs <= 300
+        def retrieve(self):
+            self.made += 1
+            return True, np.zeros((120, 160, 3), np.uint8)
+
+    class Slow:
+        def track(self, frame, **kw):
+            time.sleep(0.25)
+            from tests.test_integration import _Res
+            return [_Res([], [])]
+
+    w._model = Slow()
+    c = Cam()
+    t = threading.Thread(target=w._loop, args=(c,))
+    t.start()
+    t.join(30)
+    assert c.grabs > 290 and 3 <= c.made < c.grabs / 4, (c.grabs, c.made)   # most frames never became pictures
+    assert w.analysed_at
