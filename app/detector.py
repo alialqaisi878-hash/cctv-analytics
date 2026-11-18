@@ -19,26 +19,30 @@ PERSON = 0  # COCO class id
 
 
 class _Request:
-    __slots__ = ("cam", "frame", "prio", "at", "done", "result", "error")
+    __slots__ = ("cam", "frame", "weight", "since", "done", "result", "error")
 
-    def __init__(self, cam: str, frame, prio: float):
-        self.cam, self.frame, self.prio, self.at = cam, frame, prio, time.time()
+    def __init__(self, cam: str, frame, weight: float, since: float):
+        self.cam, self.frame, self.weight, self.since = cam, frame, weight, since
         self.done = threading.Event()
         self.result = None
         self.error: Exception | None = None
 
 
 class SharedDetector:
+    TARGET_S = 1.0                              # seconds one batch should take
     def __init__(self, cfg: dict, model=None, batch: int | None = None):
         self.cfg = cfg
         self._model = model                     # tests hand in a fake model; the real one loads in the thread
         cores = os.cpu_count() or 4
-        self.batch = batch or max(2, min(8, cores // 2))
+        self.max_batch = batch or max(2, min(8, cores // 2))
+        self.batch = batch or 2                 # grows while a batch stays quick, shrinks when it gets slow
+        self._fixed = batch is not None
         self._pending: dict[str, _Request] = {}
         self._cond = threading.Condition()
         self._stop = threading.Event()
         self.status = "starting"
         self.rate = 0.0                         # pictures analysed per second, all cameras together
+        self.batch_s = 0.0                      # seconds one batch takes
         self.busy = 0.0                         # share of the time the detector is working (1.0 = flat out)
         self.last_error = ""
         self._count = 0
@@ -46,10 +50,12 @@ class SharedDetector:
         self._thread.start()
 
     # ---------- used by the cameras ----------
-    def detect(self, cam: str, frame, prio: float, timeout: float = 3.0):
+    def detect(self, cam: str, frame, weight: float = 1.0, since: float | None = None, timeout: float = 3.0):
         """[(box, sureness), ...] for this picture, or None when a newer picture of the same camera replaced it
-        or nothing was free in time (the camera then simply tries again with its newest picture)."""
-        req = _Request(cam, frame, prio)
+        or the detector did not get to it in time (the camera then tries again with its newest picture).
+        weight: how urgent this camera is (movement, people); since: when it was last analysed. A camera's turn
+        comes sooner the longer it has waited, times its weight, so a quiet camera is never left out."""
+        req = _Request(cam, frame, weight, time.time() - 5 if since is None else since)
         with self._cond:
             old = self._pending.pop(cam, None)
             if old is not None:
@@ -58,9 +64,15 @@ class SharedDetector:
             self._cond.notify()
         if not req.done.wait(timeout):
             with self._cond:
-                if self._pending.get(cam) is req:
+                waiting = self._pending.get(cam) is req
+                if waiting:
                     del self._pending[cam]
-            return None
+            if waiting:
+                return None
+            # already being analysed: wait for it. Giving up here threw away the work of a slow PC, every time
+            # (1.1.7: a batch took longer than 3 s on the owner's PC, so almost nothing was ever counted)
+            if not req.done.wait(120):
+                return None
         if req.error is not None:
             raise req.error
         return req.result
@@ -72,6 +84,7 @@ class SharedDetector:
 
     def snapshot(self) -> dict:
         return {"status": self.status, "rate": round(self.rate, 1), "busy": round(self.busy, 2),
+                "batch_s": round(self.batch_s, 2),
                 "batch": self.batch, "waiting": len(self._pending), "error": self.last_error}
 
     # ---------- the detector thread ----------
@@ -80,8 +93,8 @@ class SharedDetector:
             return
         try:
             import torch
-            # one thread runs the model, so it may use every core; the cameras' own threads only read and draw
-            torch.set_num_threads(max(1, (os.cpu_count() or 4) - 1))
+            # half the cores: the other half decodes the cameras. Taking them all made both fight and crawl
+            torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
         except Exception:  # noqa: BLE001
             pass
         from ultralytics import YOLO  # imported lazily: heavy
@@ -111,8 +124,8 @@ class SharedDetector:
             time.sleep(0.01)                    # a moment for other cameras' pictures to join this batch
             now = time.time()
             with self._cond:
-                # what moves or has people first; the longer a camera waited, the higher it climbs
-                order = sorted(self._pending.values(), key=lambda r: r.prio + (now - r.at), reverse=True)
+                # the longer a camera waited, the higher it climbs; moving pictures and people climb faster
+                order = sorted(self._pending.values(), key=lambda r: r.weight * max(now - r.since, 0.01), reverse=True)
                 take = order[:self.batch]
                 for r in take:
                     del self._pending[r.cam]
@@ -130,6 +143,11 @@ class SharedDetector:
                 r.done.set()
             t1 = time.time()
             work += t1 - t0
+            self.batch_s = 0.8 * self.batch_s + 0.2 * (t1 - t0) if self.batch_s else t1 - t0
+            if not self._fixed and take:
+                # keep one batch around a second: on a slow PC a big batch kept every camera waiting too long
+                each = (t1 - t0) / len(take)
+                self.batch = max(1, min(self.max_batch, int(self.TARGET_S / max(each, 1e-3))))
             self._count += len(take)
             if t1 - t_prev >= 2:
                 self.rate = 0.7 * self.rate + 0.3 * (self._count / (t1 - t_prev))
