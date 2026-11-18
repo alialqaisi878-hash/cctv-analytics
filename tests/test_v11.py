@@ -580,32 +580,82 @@ def test_light_stream_is_used_and_falls_back_to_the_main_one(cfg):
     assert opened == [main] and w.stream == "main"
 
 
-def test_things_that_are_not_people_are_ignored(cfg):
-    """Specks and wide objects are never people; a box seen in one picture only is not counted."""
+def _raw_worker(cfg, frames):
+    """A worker whose detector reports the given plain detections [(box, sureness), ...] picture by picture."""
     from app.db import Database
     from app.pipeline import CameraWorker
     from tests.test_integration import _Res
+    w = CameraWorker(cfg["cameras"][0], cfg, Database(cfg["database"], cfg["timezone"]))
 
-    person = [500, 100, 560, 400]
-    frames = [[[10, 10, 14, 15], [100, 300, 400, 400], person],  # a speck, a wide desk (never people), a ghost
-              [[10, 10, 14, 15], [100, 300, 400, 400]],
-              [[10, 10, 14, 15]],
-              [person], [person], [person]]                      # the person, for real
     class M:
         i = 0
         def track(self, frame, **kw):
-            b = frames[M.i]; M.i += 1
-            return [_Res(b, list(range(1, len(b) + 1)))]
-    cfg["alerts"]["after_hours_presence"] = False
-    w = CameraWorker(cfg["cameras"][0], cfg, Database(cfg["database"], cfg["timezone"]))
+            assert kw["conf"] == 0.25               # weaker guesses are asked for too (the setting is 0.5)
+            w._raw_boxes = [(list(b), c) for b, c in frames[min(M.i, len(frames) - 1)]]
+            M.i += 1
+            return [_Res([], [])]
     w._model = M()
-    frame = np.zeros((480, 640, 3), np.uint8)
-    seen = []
-    for _ in frames:
-        w._process(frame, time.time())
+    return w
+
+
+def test_things_that_are_not_people_are_ignored(cfg):
+    """Specks and wide objects are never people; a box seen in one picture only is not counted;
+    furniture the detector half-believes in is never counted, even when someone walks in front of it."""
+    cfg["alerts"]["after_hours_presence"] = False
+    person, chair = [500, 100, 560, 400], [200, 200, 280, 380]
+    speck, desk = ([10, 10, 14, 15], 0.9), ([100, 300, 400, 400], 0.9)
+    frames = [[speck, desk, (person, 0.9), (chair, 0.3)],        # a ghost: sure, but in one picture only
+              [speck, desk, (chair, 0.3)], [speck, (chair, 0.35)], [(chair, 0.3)], [(chair, 0.3)],
+              [(person, 0.9), (chair, 0.3)], [(person, 0.9), (chair, 0.3)], [(person, 0.9), (chair, 0.3)]]
+    w = _raw_worker(cfg, frames)
+    seen, t = [], time.time()
+    for i in range(len(frames)):
+        frame = np.zeros((480, 640, 3), np.uint8)
+        frame[150:420, 180:300] = 40 * (i % 2)       # things move in front of the chair the whole time
+        w._process(frame, t + i * 0.2)
         seen.append(w.people_now)
-    assert seen == [0, 0, 0, 0, 1, 1], seen
+    assert seen == [0, 0, 0, 0, 0, 0, 1, 1], seen
     assert [t[1] for t in w._tracks] == [tuple(float(v) for v in person)]
+    assert w.snapshot()["best_conf"] == 0.9
+
+
+def test_person_at_the_edge_of_the_picture_is_counted(cfg):
+    """Ali stood at the very edge of the picture, partly cut off: the detector was only 0.2-0.3 sure, under the
+    0.5 setting, so he was never counted. A weak detection that comes in and moves like a person now counts,
+    and one missed picture does not make the person disappear."""
+    cfg["alerts"]["after_hours_presence"] = True
+    cfg["working_hours"]["days"] = []
+    boxes = [[0, 200 - 10 * i, 40 + 12 * i, 420] for i in range(6)]         # walking in from the left edge
+    frames = [[]] * 2 + [[(b, 0.3)] for b in boxes] + [[]] + [[(boxes[-1], 0.28)]] * 2 + [[]] * 20
+    w = _raw_worker(cfg, frames)
+    seen, t = [], time.time()
+    for i, f in enumerate(frames):
+        frame = np.full((480, 640, 3), 30, np.uint8)
+        for b, _ in f:
+            frame[int(b[1]):int(b[3]), int(b[0]):int(b[2])] = 200            # the person really is in the picture
+        w._process(frame, t + i * 0.2)
+        seen.append(w.people_now)
+    assert seen[:5] == [0] * 5 and seen[5:11] == [1] * 6, seen             # counted from the third time seen
+    assert seen[-1] == 0                                                     # and gone a moment after leaving
+    assert [a["kind"] for a in w.db.alerts(w.db.today())] == ["after_hours"]
+
+
+def test_one_error_never_stops_a_camera(cfg):
+    """An error while analysing a picture is written down and shown, and the camera carries on."""
+    cfg["alerts"]["after_hours_presence"] = False
+    w = _raw_worker(cfg, [[([500, 100, 560, 400], 0.9)]])
+    good = w._model.track
+    def bad(frame, **kw):
+        raise RuntimeError("boom")
+    frame = np.zeros((480, 640, 3), np.uint8)
+    w._model.track = bad
+    w._analyse(frame, time.time())
+    assert "boom" in w.snapshot()["error"] and w.errors == 1 and w.snapshot()["analysed_ago"] is None
+    w._model.track = good
+    w._analyse(frame, time.time())
+    w._analyse(frame, time.time())
+    assert w.people_now == 1 and w.snapshot()["analysed_ago"] is not None
+
 
 def test_api_key_typed_in_the_model_box_is_moved_to_the_key(cfg):
     from app.config import apply_settings, load_config
@@ -647,3 +697,31 @@ def test_person_counted_and_alerted_before_the_tracker_follows_them(cfg):
         w._process(np.zeros((480, 640, 3), np.uint8), time.time())
     assert w.people_now == 1 and w._tracks and w._tracks[0][0] is None
     assert [a["kind"] for a in db.alerts(db.today())] == ["after_hours"]
+
+
+def test_diagnostics_show_what_the_program_does_without_secrets(cfg):
+    """The owner can copy one text that tells what every camera is doing and what went wrong."""
+    from pathlib import Path as _P
+    from fastapi.testclient import TestClient
+    from app.pipeline import CameraWorker
+    from app.server import create_app
+    from app.version import __version__
+    api = create_app(cfg, start_cameras=False)
+    core = api.state.core
+    cam = cfg["cameras"][0]
+    w = CameraWorker(cam, cfg, core.db)
+    w.status, w.last_error, w.errors, w.best_conf = "online", "RuntimeError: boom", 3, 0.31
+    core.workers[cam["id"]] = w
+    log = _P(cfg["database"]).parent / "app.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("opening rtsp://admin:hunter2@192.168.1.9/s\nkey sk-proj-abcdefghijklmnop\nTraceback: نص عربي\n", encoding="utf-8")
+    c = TestClient(api)
+    t = c.get("/api/diagnostics").text
+    assert f"CCTV Analytics {__version__}" in t and cam["name"] in t
+    assert "last error: RuntimeError: boom" in t and "best guess 0.31" in t and "inside working hours now" in t
+    assert "hunter2" not in t and "rtsp://***@192.168.1.9" in t and "abcdefghijklmnop" not in t and "نص عربي" in t
+    assert "attachment" in c.get("/api/diagnostics?download=1").headers["content-disposition"]
+    snap = [x for x in c.get("/api/cameras").json() if x["id"] == cam["id"]][0]
+    assert snap["error"] == "RuntimeError: boom" and snap["best_conf"] == 0.31 and snap["analysed_ago"] is None
+    page = c.get("/").text
+    assert "diag-open" in page and "vw-health" in page

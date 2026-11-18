@@ -308,6 +308,7 @@
           <div class="field"><label for="s-pass">كلمة مرور للبرنامج<small id="s-pass-state"></small></label><input type="password" id="s-pass" autocomplete="new-password"></div>
           <div class="field"><label for="s-auto">تثبيت التحديثات تلقائياً خارج الدوام</label><input type="checkbox" id="s-auto"></div>
           <div class="field"><label>الإصدار الحالي: <span id="s-ver" class="ltr"></span><small id="s-upd"></small></label><button class="btn ghost small" id="upd-check">تحقق من التحديثات</button></div>
+          <div class="field"><label>فحص البرنامج<small>يبيّن شنو ديسوي البرنامج هسه وآخر سطور السجل. إذا صارت مشكلة انسخه ودزّه.</small></label><button class="btn ghost small" id="diag-open">افتح الفحص</button></div>
         </div>
       </div>
     </section>
@@ -336,7 +337,14 @@
 <dialog id="dlg-view" class="wide" style="width:min(1500px,97vw)">
   <h3 id="vw-title"></h3>
   <div id="vw-box" style="background:#000;border-radius:10px;line-height:0"><img id="vw-img" class="bigpic" style="max-height:78vh" alt=""></div>
+  <div class="muted ltr" id="vw-health" style="margin-top:8px;font-size:13px;direction:rtl"></div>
   <div class="acts"><button class="btn ghost" id="vw-full">ملء الشاشة</button><button class="btn ghost" data-close>إغلاق</button></div>
+</dialog>
+
+<dialog id="dlg-diag" class="wide">
+  <h3>فحص البرنامج</h3>
+  <pre id="diag-text" class="ltr" style="direction:ltr;text-align:left;white-space:pre-wrap;max-height:62vh;overflow:auto;background:#0b1220;border-radius:10px;padding:12px;font-size:12px;margin:0"></pre>
+  <div class="acts"><button class="btn" id="diag-copy">نسخ</button><a class="btn ghost" href="/api/diagnostics?download=1" download="cctv-diagnostics.txt">تنزيل كملف</a><button class="btn ghost" id="diag-refresh">تحديث</button><button class="btn ghost" data-close>إغلاق</button></div>
 </dialog>
 
 <dialog id="dlg-alert" class="wide">
@@ -486,10 +494,35 @@ function camCard(c, manage) {
 
 function openView(id) {
   const img = $("vw-img"); img.dataset.cam = id; img.removeAttribute("src");
-  $("vw-title").textContent = camName(id); $("dlg-view").showModal(); pump(img);
+  $("vw-title").textContent = camName(id); $("vw-health").innerHTML = camHealth(lastCams.find(c => c.id === id)); $("dlg-view").showModal(); pump(img);
 }
 document.addEventListener("click", e => { const v = e.target.closest("[data-view-cam]"); if (v) openView(v.dataset.viewCam); });
 $("vw-full").onclick = () => { const b = $("vw-box"); (b.requestFullscreen ? b.requestFullscreen() : Promise.reject()).catch(() => {}); };
+
+// what a camera is doing, in words: so a problem shows on the screen and not only in a log file
+function camHealth(c) {
+  if (!c || c.status !== "online") return "";
+  const parts = [`${c.stream === "sub" ? "بث خفيف" : "بث كامل"} ${c.size || ""}`, `يقرأ ${c.read_fps} صورة/ث`, `يحلل ${c.fps} صورة/ث`,
+    `الأشخاص ${c.people_now ?? 0}`, `ثقة الكاشف بأقوى شي شافه ${c.best_conf ?? 0}`, `الإصدار ${PAGE_VERSION}`];
+  let warn = "";
+  if (c.error) warn = `⚠️ خطأ بالتحليل: ${c.error}`;
+  else if (c.analysed_ago == null) warn = "⏳ التحليل بعده يبدأ (يحتاج كم ثانية بعد التشغيل)";
+  else if (c.analysed_ago > 10) warn = `⚠️ التحليل متوقف من ${Math.round(c.analysed_ago)} ثانية`;
+  return (warn ? `<b style="color:#f87171">${esc(warn)}</b> · ` : "") + esc(parts.join(" · "));
+}
+async function loadDiag() {
+  $("diag-text").textContent = "جاري الفحص...";
+  try { const r = await fetch("/api/diagnostics", {cache: "no-store"}); $("diag-text").textContent = await r.text(); }
+  catch (e) { $("diag-text").textContent = "تعذر الفحص: " + e.message; }
+}
+$("diag-open").onclick = () => { $("dlg-diag").showModal(); loadDiag(); };
+$("diag-refresh").onclick = loadDiag;
+$("diag-copy").onclick = async () => {
+  const t = $("diag-text").textContent;
+  try { await navigator.clipboard.writeText(t); }
+  catch (_) { const r = document.createRange(); r.selectNodeContents($("diag-text")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.execCommand("copy"); }
+  $("diag-copy").textContent = "انّسخ ✓"; setTimeout(() => $("diag-copy").textContent = "نسخ", 2000);
+};
 
 let lastCams = [];
 async function loadCams() {
@@ -511,7 +544,9 @@ async function loadCams() {
     const tin = (c.lines || []).reduce((a, l) => a + l.in, 0), tout = (c.lines || []).reduce((a, l) => a + l.out, 0);
     document.querySelectorAll(`[data-pill="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = statusPill(c));
     document.querySelectorAll(`[data-counts="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = `<span>دخول <b>${tin}</b></span><span>خروج <b>${tout}</b></span>`);
-    document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.textContent = c.status === "online" ? `${c.people_now ?? 0} بالصورة الآن` : "");
+    const stuck = c.status === "online" && (c.error || c.analysed_ago > 10);
+    document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.textContent = c.status === "online" ? (stuck ? "⚠️ التحليل متوقف، افتح الصورة" : `${c.people_now ?? 0} بالصورة الآن`) : "");
+    if ($("dlg-view").open && $("vw-img").dataset.cam === c.id) $("vw-health").innerHTML = camHealth(c);
     document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.title = c.size ? `${c.stream === "sub" ? "بث خفيف" : "بث كامل"} ${c.size} · ${c.read_fps} صورة/ثانية` : "");
   }
   $("k-now").textContent = now;
