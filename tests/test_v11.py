@@ -178,7 +178,7 @@ def test_pipeline_names_person_and_alerts(cfg, tmp_path, engine_models):
     w = CameraWorker(cfg["cameras"][0], cfg, db, faces=e)
     w._model = Still()
     w._process(frame.copy(), time.time())
-    assert w.names[3]["name"] == "Lena"
+    assert w.names[1]["name"] == "Lena"          # the first person this camera found is number 1
     att = db.attendance(db.today())
     assert att and att[0]["person_id"] == p["id"]
     a = db.alerts(db.today())
@@ -503,9 +503,9 @@ def test_live_camera_never_lags_and_shows_fast(cfg):
     w._model = Slow()
     seen = []
     orig = w._process
-    def process(frame, ts):
+    def process(frame, ts, *a):
         seen.append((int(frame[0, 0, 1]) * 256 + int(frame[0, 0, 0]), w_cam.n))
-        orig(frame, ts)
+        orig(frame, ts, *a)
     w._process = process
     w_cam = Cam()
     shots = []
@@ -695,7 +695,7 @@ def test_person_counted_and_alerted_before_the_tracker_follows_them(cfg):
     w._model = M()
     for _ in range(3):
         w._process(np.zeros((480, 640, 3), np.uint8), time.time())
-    assert w.people_now == 1 and w._tracks and w._tracks[0][0] is None
+    assert w.people_now == 1 and w._tracks and w._tracks[0][0] == 1   # one person, the same one each time
     assert [a["kind"] for a in db.alerts(db.today())] == ["after_hours"]
 
 
@@ -725,3 +725,89 @@ def test_diagnostics_show_what_the_program_does_without_secrets(cfg):
     assert snap["error"] == "RuntimeError: boom" and snap["best_conf"] == 0.31 and snap["analysed_ago"] is None
     page = c.get("/").text
     assert "diag-open" in page and "vw-health" in page
+
+
+def test_one_shared_detector_serves_many_cameras_busiest_first(cfg):
+    """Ali has 32 cameras: each with its own model, none got analysed. One model now serves all of them,
+    a few pictures at a time, and a camera where something moves goes before the quiet ones."""
+    import threading
+    from app.detector import SharedDetector
+
+    calls = []
+
+    class Boxes:
+        def __init__(self, n):
+            import torch
+            self.xyxy = torch.tensor([[10.0, 10.0, 50.0, 150.0]] * n)
+            self.conf = torch.tensor([0.9] * n)
+        def __len__(self):
+            return len(self.conf)
+
+    class Res:
+        def __init__(self, n):
+            self.boxes = Boxes(n)
+
+    class Model:
+        def predict(self, frames, **kw):
+            calls.append([int(f[0, 0, 0]) for f in frames])
+            time.sleep(0.05)
+            return [Res(int(f[0, 0, 0]) == 7) for f in frames]
+
+    d = SharedDetector(cfg, model=Model(), batch=2)
+    out = {}
+
+    def ask(cam, prio):
+        f = np.zeros((10, 10, 3), np.uint8)
+        f[0, 0, 0] = cam
+        out[cam] = d.detect(f"c{cam}", f, prio)
+
+    ask(1, 0)                                           # warm up: the detector thread is running
+    calls.clear()
+    ts = [threading.Thread(target=ask, args=(c, 3 if c == 7 else 0)) for c in (2, 3, 4, 5, 6, 7)]
+    with d._cond:                                       # all six wait together before the detector picks
+        for t in ts:
+            t.start()
+        while len(d._pending) < 6:
+            d._cond.wait(0.01)
+    for t in ts:
+        t.join()
+    assert sorted(sum(calls, [])) == [2, 3, 4, 5, 6, 7] and max(len(c) for c in calls) == 2
+    assert 7 in calls[0]                                # the camera where something moves went first
+    assert out[7] == [((10.0, 10.0, 50.0, 150.0), 0.8999999761581421)] and out[2] == []
+    d.stop()
+    # a newer picture of the same camera replaces the older one still waiting
+    gate = threading.Event()
+
+    class Busy(Model):
+        def predict(self, frames, **kw):
+            gate.wait(5)
+            return super().predict(frames, **kw)
+
+    d = SharedDetector(cfg, model=Busy(), batch=1)
+    threading.Thread(target=ask, args=(9, 0)).start()            # keeps the detector busy
+    while d._pending:
+        time.sleep(0.01)
+    t = threading.Thread(target=ask, args=(8, 0)); t.start()
+    while "c8" not in d._pending:
+        time.sleep(0.01)
+    newer = {}
+    t2 = threading.Thread(target=lambda: newer.setdefault("r", d.detect("c8", np.zeros((10, 10, 3), np.uint8), 0)))
+    t2.start()
+    t.join(3)
+    assert not t.is_alive() and out[8] is None       # the old picture is dropped: the camera goes on with its newest
+    gate.set()
+    t2.join(3)
+    assert newer["r"] == []
+    d.stop()
+
+
+def test_app_cameras_share_one_detector(cfg):
+    from app.server import create_app
+    cfg["cameras"] = [dict(cfg["cameras"][0], id=f"c{i}", source="rtsp://127.0.0.1:9/none") for i in range(3)]
+    api = create_app(cfg, start_cameras=True)
+    core = api.state.core
+    ws = list(core.workers.values())
+    assert len(ws) == 3 and all(w.detector is core.detector for w in ws) and all(w._model is None for w in ws)
+    for w in ws:
+        w.stop()
+    core.detector.stop()

@@ -22,6 +22,7 @@ from .analytics import LineCounter
 from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
                      notice_text, public_settings, remove_local_camera, set_camera_lines)
 from .db import Database
+from .detector import SharedDetector
 from .faces import FaceEngine, decode_image
 from .floormap import FloorMaps
 from .notify import Notifier
@@ -44,6 +45,7 @@ class App:
         self.notifier = Notifier(cfg)
         self.maps = FloorMaps(Path(cfg["database"]).parent)
         self.workers: dict[str, CameraWorker] = {}
+        self.detector: SharedDetector | None = None    # one model for all cameras, started with the first camera
         if start_cameras:
             for cam in cfg["cameras"]:
                 if cam["enabled"]:
@@ -55,7 +57,9 @@ class App:
         self.updater.run_background(lambda: in_working_hours(cfg, self.db.local(time.time())))
 
     def start_worker(self, cam: dict) -> CameraWorker:
-        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps)
+        if self.detector is None:
+            self.detector = SharedDetector(self.cfg)
+        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps, self.detector)
         self.workers[cam["id"]] = w
         w.start()
         return w
@@ -537,14 +541,19 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
                   f"cooldown {al['cooldown_minutes']} min, unseen {db.unseen_count()}",
                   f"faces: enabled {cfg['faces']['enabled']}, {core.faces.status}, people {len(core.faces.people)}",
                   f"sending: {cfg['notify'].get('provider') or 'off'}, ready {core.notifier.enabled}, "
-                  f"sent {core.notifier.sent}, last error: {core.notifier.last_error or '-'}", "", "cameras:"]
+                  f"sent {core.notifier.sent}, last error: {core.notifier.last_error or '-'}"]
+        if core.detector is not None:
+            d = core.detector.snapshot()
+            lines.append(f"shared detector: {d['status']}, {d['rate']} pictures/s for all cameras, busy {int(d['busy'] * 100)}%, "
+                         f"{d['batch']} at a time, waiting {d['waiting']}" + (f", last error: {d['error']}" if d["error"] else ""))
+        lines += ["", f"cameras ({len(cfg['cameras'])}):"]
         for cam in list(cfg["cameras"]):
             w = core.workers.get(cam["id"])
             if not w:
                 lines.append(f"  {cam['name']}: disabled")
                 continue
             sn = w.snapshot()
-            lines.append(f"  {sn['name']}: {sn['status']}, thread alive {w.is_alive()}, {sn['stream'] or '-'} {sn['size'] or '-'}, "
+            lines.append(f"  {sn['name']} [{cam['id']}]: {sn['status']}, thread alive {w.is_alive()}, {sn['stream'] or '-'} {sn['size'] or '-'}, "
                          f"reading {sn['read_fps']}/s, analysing {sn['fps']}/s, last analysis {sn['analysed_ago']} s ago, "
                          f"people {sn['people_now']}, detector's best guess {sn['best_conf']}, errors {w.errors}"
                          + (f", last error: {sn['error']}" if sn["error"] else ""))

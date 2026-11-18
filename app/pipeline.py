@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import itertools
 import threading
 import time
 
@@ -35,18 +36,18 @@ def _iou(a, b) -> float:
 
 class _Seen:
     """Something the detector reported in the same place over several analysed pictures."""
-    __slots__ = ("box", "first_box", "first", "last", "hits", "strong", "motion", "changed", "ok", "tid")
+    __slots__ = ("box", "first_box", "first", "last", "hits", "strong", "motion", "changed", "ok", "uid")
 
-    def __init__(self, box, ts):
+    def __init__(self, box, ts, uid: int):
+        self.uid = uid                          # the person's number on this camera (lines, zones, faces)
         self.box = self.first_box = box
         self.first = self.last = ts
         self.hits = self.strong = self.motion = 0
         self.changed = self.ok = False
-        self.tid = None
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None, maps=None):
+    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None, maps=None, detector=None):
         super().__init__(daemon=True, name=f"cam-{cam['id']}")
         self.cam, self.cfg, self.db = cam, cfg, db
         self.faces, self.notifier, self.maps = faces, notifier, maps    # FaceEngine / Notifier / FloorMaps, optional
@@ -61,7 +62,9 @@ class CameraWorker(threading.Thread):
         self.lines = [LineCounter(l["id"], tuple(l["points"][0]), tuple(l["points"][1]), l.get("invert", False))
                       for l in cam["lines"]]
         self.zones = [ZoneTracker(z["id"], [tuple(p) for p in z["points"]]) for z in cam["zones"]]
-        self._model = None
+        self._model = None                      # a camera's own model: only without the shared detector (tests)
+        self.detector = detector                # SharedDetector used by all cameras
+        self._uids = itertools.count(1)
         self._last_occ_write = 0.0
         self._last_alert: dict[str, float] = {}
         self._pending: list[tuple[str, str, str | None]] = []   # alerts waiting for this frame's picture
@@ -194,7 +197,8 @@ class CameraWorker(threading.Thread):
 
     def run(self):
         try:
-            self._load_model()
+            if self.detector is None:
+                self._load_model()
         except Exception as e:  # noqa: BLE001
             self.status = f"model error: {e}"
             log.exception("model load failed")
@@ -219,8 +223,10 @@ class CameraWorker(threading.Thread):
             self._note_offline()
             cap.release()
             if self.cam.get("loop") and not self.stop_event.is_set():
-                # restart sample video: reset tracker so IDs don't carry across
-                self._load_model()
+                # restart sample video: people's numbers don't carry across
+                self._seen = []
+                if self.detector is None:
+                    self._load_model()
                 continue
             if not self.stop_event.is_set():
                 if self._is_file():
@@ -238,18 +244,36 @@ class CameraWorker(threading.Thread):
         if self.errors <= 5 or self.errors % 200 == 0:      # the log must not fill up with the same error
             log.exception("camera %s: analysis error (%d so far)", self.id, self.errors)
 
-    def _analyse(self, frame: np.ndarray, ts: float) -> None:
-        """One picture through the analysis; an error in one picture never stops the camera."""
+    def _priority(self, moving) -> float:
+        """How much this camera needs the detector now: movement and people first, quiet cameras now and then."""
+        p = 0.0
+        if moving is None or float(moving.mean()) > 0.002:    # something moves (or the whole picture changed)
+            p += 3
+        if any(s.ok for s in self._seen):                       # people in view: keep following them
+            p += 2
+        return p + (min((time.time() - self.analysed_at) / 5, 2) if self.analysed_at else 5)
+
+    def _analyse(self, frame: np.ndarray, ts: float) -> bool:
+        """One picture through the analysis; an error in one picture never stops the camera.
+        False when the shared detector had no time for this picture (the camera tries its next one)."""
         try:
-            self._process(frame, ts)
+            moving = self._moving(frame)
+            dets = None
+            if self.detector is not None and self._model is None:
+                dets = self.detector.detect(self.id, frame, self._priority(moving))
+                if dets is None:
+                    return False
+            self._process(frame, ts, dets, moving)
             self.analysed_at = time.time()
+            return True
         except Exception as e:  # noqa: BLE001
             self._note_error(e)
-            if self.errors % 20 == 0:                       # keeps failing: start the detector afresh
+            if self.detector is None and self.errors % 20 == 0:   # keeps failing: start the detector afresh
                 try:
                     self._load_model()
                 except Exception:  # noqa: BLE001
                     log.exception("camera %s: detector could not be reloaded", self.id)
+            return True
 
     def _note_offline(self) -> None:
         """Alert once when a camera that was working stops sending pictures for 2 minutes."""
@@ -342,7 +366,8 @@ class CameraWorker(threading.Thread):
                 t0 = time.time()
                 self._offline_since = None
                 self._was_online = True
-                self._analyse(frame, t0)
+                if not self._analyse(frame, t0):
+                    continue                    # the shared detector was busy with other cameras: take the newest
                 elapsed = time.time() - t0
                 if elapsed < target_dt:
                     self.stop_event.wait(target_dt - elapsed)
@@ -366,33 +391,41 @@ class CameraWorker(threading.Thread):
         cv2.accumulateWeighted(g, self._bg, 0.05)
         return None if mask.mean() > 0.5 else mask
 
-    def _process(self, frame: np.ndarray, ts: float):
+    def _detect_here(self, frame: np.ndarray, low: float):
+        """This camera's own model (no shared detector): plain detections + the tracker's boxes."""
+        det = self.cfg["detector"]
+        self._raw_boxes = []
+        res = self._model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[PERSON],
+                                conf=low, imgsz=det["imgsz"], device=det.get("device"),
+                                verbose=False)[0]
+        followed = []                           # the tracker's boxes
+        if res.boxes is not None and res.boxes.id is not None:
+            followed = [tuple(float(v) for v in box) for box in res.boxes.xyxy.cpu().numpy()]
+        dets = [(tuple(float(v) for v in b), float(c)) for b, c in self._raw_boxes]
+        if not dets:                            # no plain detections (another library version): the tracker's boxes
+            dets = [(b, 1.0) for b in followed]
+        return dets, followed
+
+    def _process(self, frame: np.ndarray, ts: float, dets=None, moving=False):
         det = self.cfg["detector"]
         h, w = frame.shape[:2]
         sure = det["confidence"]
         # the detector is asked for weaker guesses too: a person half out of the picture, bent over or seen from
         # above scores low. Weak guesses only count when they also move like a person (see below).
         low = min(sure, max(0.2, sure * 0.5))
-        self._raw_boxes = []
-        res = self._model.track(frame, persist=True, tracker="bytetrack.yaml", classes=[PERSON],
-                                conf=low, imgsz=det["imgsz"], device=det.get("device"),
-                                verbose=False)[0]
+        followed = []
+        if dets is None:
+            dets, followed = self._detect_here(frame, low)
+        if moving is False:
+            moving = self._moving(frame)
         if self._last_ts:
             self._dt = 0.8 * self._dt + 0.2 * min(max(ts - self._last_ts, 0.01), 10)
         self._last_ts = ts
         hold = max(HOLD_S, 2.5 * self._dt)
 
-        followed = []                           # the tracker's boxes: (id, box)
-        if res.boxes is not None and res.boxes.id is not None:
-            for box, tid in zip(res.boxes.xyxy.cpu().numpy(), res.boxes.id.int().cpu().tolist()):
-                followed.append((tid, tuple(float(v) for v in box)))
-        dets = [(tuple(float(v) for v in b), float(c)) for b, c in self._raw_boxes]
-        if not dets:                            # no plain detections (another library version): the tracker's boxes
-            dets = [(b, 1.0) for _, b in followed]
         best = max((c for _, c in dets), default=0.0)
         if best >= self.best_conf or ts - self._best_at > 5:
             self.best_conf, self._best_at = best, ts
-        moving = self._moving(frame)
 
         def moved(b) -> bool:
             if moving is None:
@@ -416,7 +449,7 @@ class CameraWorker(threading.Thread):
                         abs((s.box[0] + s.box[2]) / 2 - cx) < 1.5 * bh and abs((s.box[1] + s.box[3]) / 2 - cy) < bh]
                 o = min(near, key=lambda s: abs((s.box[0] + s.box[2]) / 2 - cx), default=None)
             if o is None:
-                o = _Seen(b, ts)
+                o = _Seen(b, ts, next(self._uids))
                 self._seen.append(o)
             else:
                 free.remove(o)
@@ -427,7 +460,7 @@ class CameraWorker(threading.Thread):
             # sure and shaped like a person (taller than wide: drops desks, bags, shadows)
             if c >= sure and bh >= 0.8 * bw:
                 # the tracker only gives an id to what it matched twice already, so with an id once is enough
-                o.strong += 2 if any(_iou(b, fb) > 0.5 for _, fb in followed) else 1
+                o.strong += 2 if any(_iou(b, fb) > 0.5 for fb in followed) else 1
             o.motion += moved(b)
             o.changed = o.changed or _iou(b, o.first_box) < 0.5
             # a person: the detector is sure twice, or it is less sure but the thing keeps being seen, moves and
@@ -437,17 +470,13 @@ class CameraWorker(threading.Thread):
         self._seen = [s for s in self._seen if ts - s.last <= (hold if s.ok else GHOST_S)][-200:]
         people = [s for s in self._seen if s.ok]
 
-        tracks = []                             # followed people (with an id): used for lines, zones and faces
-        for s in people:
-            s.tid = None
-        for tid, b in followed:
-            s = max(people, key=lambda p: _iou(b, p.box), default=None)
-            if s is not None and s.tid is None and _iou(b, s.box) > 0.3:
-                s.tid = tid
-                tracks.append((tid, b, ((b[0] + b[2]) / 2 / w, b[3] / h)))  # bottom-centre = where the person stands
-        # everyone accepted as a person, also before the tracker has an id for them (so they are counted and blurred)
-        shown = list(tracks) + [(None, s.box, ((s.box[0] + s.box[2]) / 2 / w, s.box[3] / h))
-                                for s in people if s.tid is None and ts - s.last <= max(1.0, 2.5 * self._dt)]
+        def foot(b):                            # bottom-centre = where the person stands
+            return (b[0] + b[2]) / 2 / w, b[3] / h
+        # people found in this picture: used for lines, zones and faces
+        tracks = [(s.uid, s.box, foot(s.box)) for s in people if s.last == ts]
+        # people missed for a moment are still shown (and blurred) where they were last seen
+        shown = tracks + [(s.uid, s.box, foot(s.box)) for s in people
+                          if s.last != ts and ts - s.last <= max(1.0, 2.5 * self._dt)]
         self.people_now = len(people)
         self._log_stats(ts)
         if ts - self._last_raw >= 1.0:

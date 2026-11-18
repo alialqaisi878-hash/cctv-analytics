@@ -507,7 +507,7 @@ function camHealth(c) {
   let warn = "";
   if (c.error) warn = `⚠️ خطأ بالتحليل: ${c.error}`;
   else if (c.analysed_ago == null) warn = "⏳ التحليل بعده يبدأ (يحتاج كم ثانية بعد التشغيل)";
-  else if (c.analysed_ago > 10) warn = `⚠️ التحليل متوقف من ${Math.round(c.analysed_ago)} ثانية`;
+  else if (c.analysed_ago > 30) warn = `⚠️ التحليل متوقف من ${Math.round(c.analysed_ago)} ثانية`;
   return (warn ? `<b style="color:#f87171">${esc(warn)}</b> · ` : "") + esc(parts.join(" · "));
 }
 async function loadDiag() {
@@ -544,7 +544,7 @@ async function loadCams() {
     const tin = (c.lines || []).reduce((a, l) => a + l.in, 0), tout = (c.lines || []).reduce((a, l) => a + l.out, 0);
     document.querySelectorAll(`[data-pill="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = statusPill(c));
     document.querySelectorAll(`[data-counts="${CSS.escape(c.id)}"]`).forEach(e => e.innerHTML = `<span>دخول <b>${tin}</b></span><span>خروج <b>${tout}</b></span>`);
-    const stuck = c.status === "online" && (c.error || c.analysed_ago > 10);
+    const stuck = c.status === "online" && (c.error || c.analysed_ago > 30);
     document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.textContent = c.status === "online" ? (stuck ? "⚠️ التحليل متوقف، افتح الصورة" : `${c.people_now ?? 0} بالصورة الآن`) : "");
     if ($("dlg-view").open && $("vw-img").dataset.cam === c.id) $("vw-health").innerHTML = camHealth(c);
     document.querySelectorAll(`[data-st="${CSS.escape(c.id)}"]`).forEach(e => e.title = c.size ? `${c.stream === "sub" ? "بث خفيف" : "بث كامل"} ${c.size} · ${c.read_fps} صورة/ثانية` : "");
