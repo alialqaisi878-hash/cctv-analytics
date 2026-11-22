@@ -122,6 +122,15 @@ jobs:
               if ($ok -and $i -ge 12) { break }
             } catch { Write-Host "waiting for server..." }
           }
+          # the fast detector engine (OpenVINO) must work in a folder with an Arabic name, like real installs
+          $eng = ""
+          for ($i = 0; $i -lt 36; $i++) {
+            $diag = (Invoke-WebRequest http://localhost:8000/api/diagnostics -UseBasicParsing).Content
+            if ($diag -match "engine (openvino|pytorch)") { $eng = $Matches[1]; break }
+            Start-Sleep 5
+          }
+          $diag -split "`n" | Select-String "shared detector"
+          if ($eng -ne "openvino") { Get-Content "$dir\data\app.log" -Tail 40; Write-Error "the fast detector engine was not used: '$eng'"; exit 1 }
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode

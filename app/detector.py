@@ -121,7 +121,7 @@ class SharedDetector:
         from ultralytics import YOLO  # imported lazily: heavy
         det = self.cfg["detector"]
         self._model = YOLO(det["model"])
-        self.engine = "pytorch"
+        engine = "pytorch"
         if self._wants_openvino(det):
             self.status = "preparing the fast engine (first start only, about a minute)"
             try:
@@ -129,12 +129,13 @@ class SharedDetector:
                 fast = YOLO(str(path), task="detect")
                 fast.predict([np.zeros((det["imgsz"], det["imgsz"], 3), np.uint8)] * 2, imgsz=det["imgsz"],
                              classes=[PERSON], verbose=False)       # proves it works before the cameras use it
-                self._model, self.engine = fast, "openvino"
+                self._model, engine = fast, "openvino"
                 if not self._fixed:
                     self.max_batch = 8          # OpenVINO gets faster per picture with bigger batches
             except Exception as e:  # noqa: BLE001 - the normal engine still works, only slower
                 self.last_error = f"fast engine not used: {type(e).__name__}: {e}"[:300]
                 log.exception("OpenVINO engine could not be prepared, using PyTorch")
+        self.engine = engine
 
     @staticmethod
     def _wants_openvino(det: dict) -> bool:
