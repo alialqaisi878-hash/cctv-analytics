@@ -5,6 +5,8 @@
     python run.py --demo-data            # fill the database with a sample week, to try the dashboard/agent
     python run.py --report               # print today's report and exit
     python run.py --app-window           # desktop mode: own window, no console (used by the Windows shortcut)
+    python run.py --service              # the program in the background, day and night (started with Windows)
+    python run.py --stop [--forget]      # stop it (and no longer start with Windows)
 """
 from __future__ import annotations
 
@@ -63,33 +65,6 @@ def _open_app_window(url: str) -> bool:
     return True
 
 
-def _window_profile_open() -> bool | None:
-    """Is the app window's browser still running? Edge/Chrome keep a "lockfile" in their profile
-    folder, locked for as long as they run (Windows only). None = cannot tell here.
-    This does not depend on the page, which the browser may freeze while the window is minimised."""
-    if os.name != "nt":
-        return None
-    lock = WINDOW_PROFILE / "lockfile"
-    if not lock.exists():
-        return False
-    try:
-        with open(lock, "ab"):
-            return False          # left over from a browser that is gone
-    except PermissionError:
-        return True
-    except OSError:
-        return None
-
-
-def _window_state(url: str) -> dict | None:
-    import urllib.request
-    try:
-        with urllib.request.urlopen(url + "/api/window/state", timeout=3) as r:
-            return json.load(r)
-    except Exception:  # noqa: BLE001 - server busy or restarting
-        return None
-
-
 def _message_box(text: str) -> None:
     if os.name == "nt":
         import ctypes
@@ -98,89 +73,233 @@ def _message_box(text: str) -> None:
         print(text)
 
 
-def run_windowed(config: str, port: int, url: str) -> int:
-    """Desktop mode: the server runs hidden in a child process, the dashboard shows in its own window.
-
-    Closing the window stops the program. When the server exits with RESTART_EXIT_CODE (an online
-    update was installed) it is started again and the window stays open.
-    """
-    from app.updater import RESTART_EXIT_CODE
-    if _port_in_use(port):          # already running (auto-start, or opened twice): just show it
-        _open_app_window(url)
-        return 0
-    (ROOT / "data").mkdir(exist_ok=True)
-    log_path = ROOT / "data" / "app.log"
-    if log_path.exists() and log_path.stat().st_size > 5_000_000:
-        log_path.unlink()
+def _windowless_python() -> Path:
     exe = Path(sys.executable)
-    if exe.name.lower() == "pythonw.exe":   # the child needs real output streams (they go to the log file)
-        exe = exe.with_name("python.exe")
-    env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
-    flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+    w = exe.with_name("pythonw.exe")
+    return w if os.name == "nt" and w.exists() else exe
 
-    def start_server() -> subprocess.Popen:
-        log = open(log_path, "ab")
-        return subprocess.Popen([str(exe), str(ROOT / "run.py"), "--config", config], cwd=str(ROOT), env=env,
-                                stdin=subprocess.DEVNULL, stdout=log, stderr=log, creationflags=flags)
 
-    server = start_server()
-    deadline = time.time() + 180
-    while not _port_in_use(port):
-        if server.poll() is not None or time.time() > deadline:
-            if server.poll() is None:
-                server.kill()
-            _message_box(f"CCTV Analytics could not start.\nDetails: {log_path}")
-            return 1
-        time.sleep(0.3)
-    own_window = _open_app_window(url)
+def _alive(port: int) -> bool:
+    """Does the server answer? (A password page or an error still means it is alive.)"""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/info", timeout=10):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
-    def note(msg: str) -> None:
+
+def _single_instance(path: Path):
+    """A lock held for as long as this service runs: a second copy (auto-start + shortcut) gives way."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return f
+    except OSError:
+        f.close()
+        return None
+
+
+class Service:
+    """The program running day and night: the server runs in a child process that is started again when it
+    stops unexpectedly, stops answering, or installed an online update. Closing the window does not stop it;
+    the icon next to the clock, the settings page or the uninstaller does."""
+
+    HEALTH_EVERY = 20          # seconds between checks that the server still answers
+    HEALTH_GRACE = 300         # a fresh server may be busy preparing for this long
+    HEALTH_FAILS = 9           # this many missed checks in a row (3 minutes): start it again
+
+    def __init__(self, config: str, port: int, url: str):
+        self.config, self.port, self.url = config, port, url
+        self.log_path = ROOT / "data" / "app.log"
+        self.stopping = threading.Event()
+        self.server: subprocess.Popen | None = None
+        self.restarts = 0
+
+    def note(self, msg: str) -> None:
         try:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " launcher " + msg + "\n")
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " service " + msg + "\n")
         except OSError:
             pass
 
-    # The program stops when its window is closed. The window's process cannot be trusted for that
-    # (the browser may hand the window to another process and exit at once), so the page itself is
-    # watched: it says goodbye when it closes, and it asks for data every few seconds while open.
-    idle_limit = float(os.environ.get("CCTV_WINDOW_IDLE_S", "180"))   # covers a window killed without goodbye
-    url_local = f"http://127.0.0.1:{port}"
-    grace_until = time.time() + 30
-    last_tick = time.time()
-    profile_seen = False      # the window's browser profile was seen in use: trust it, not page activity
-    try:
-        while True:
-            time.sleep(1)
-            now = time.time()
-            if now - last_tick > 15:          # the PC was asleep: let the page reconnect first
-                grace_until = now + 90
-            last_tick = now
-            rc = server.poll()
-            if rc == RESTART_EXIT_CODE:
-                server = start_server()       # the new server starts with a fresh idle clock
-                continue
-            if rc is not None:
-                _message_box(f"CCTV Analytics stopped unexpectedly.\nDetails: {log_path}")
+    def start_server(self) -> None:
+        if self.log_path.exists() and self.log_path.stat().st_size > 5_000_000:
+            self.log_path.replace(self.log_path.with_suffix(".old.log"))
+        exe = Path(sys.executable)
+        if exe.name.lower() == "pythonw.exe":   # the child needs real output streams (they go to the log file)
+            exe = exe.with_name("python.exe")
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        log = open(self.log_path, "ab")
+        self.server = subprocess.Popen([str(exe), str(ROOT / "run.py"), "--config", self.config], cwd=str(ROOT),
+                                       env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                       creationflags=0x08000000 if os.name == "nt" else 0)   # CREATE_NO_WINDOW
+        self.started_at = time.time()
+
+    def kill_server(self) -> None:
+        if self.server and self.server.poll() is None:
+            self.server.kill()
+            try:
+                self.server.wait(10)
+            except subprocess.TimeoutExpired:
+                pass
+
+    def _keep_awake(self) -> None:
+        from app.autostart import keep_awake
+        try:
+            keep_awake(bool(load_config(ROOT / self.config)["startup"]["keep_awake"]))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def loop(self) -> int:
+        from app.autostart import STOP_EXIT_CODE
+        from app.updater import RESTART_EXIT_CODE
+        self.start_server()
+        fails, last_check, last_awake, backoff = 0, time.time(), 0.0, 5
+        try:
+            while not self.stopping.wait(1):
+                now = time.time()
+                if now - last_awake > 60:
+                    self._keep_awake()          # asked again every minute, from this same thread
+                    last_awake = now
+                rc = self.server.poll()
+                if rc == STOP_EXIT_CODE:
+                    self.note("stopped on request")
+                    return 0
+                if rc == RESTART_EXIT_CODE:
+                    self.note("restarting after an online update")
+                    self.start_server()
+                    fails = 0
+                    continue
+                if rc is not None:
+                    self.restarts += 1
+                    self.note(f"the server stopped unexpectedly (code {rc}): starting it again in {backoff}s")
+                    if self.stopping.wait(backoff):
+                        break
+                    backoff = min(backoff * 2, 60)
+                    self.start_server()
+                    fails = 0
+                    continue
+                if now - self.started_at > 600:
+                    backoff = 5                 # it ran fine for a while: a later crash restarts quickly again
+                if now - last_check >= self.HEALTH_EVERY and now - self.started_at > self.HEALTH_GRACE:
+                    last_check = now
+                    fails = 0 if _alive(self.port) else fails + 1
+                    if fails >= self.HEALTH_FAILS:
+                        self.restarts += 1
+                        self.note("the server stopped answering for 3 minutes: starting it again")
+                        self.kill_server()
+                        self.start_server()
+                        fails = 0
+            return 0
+        finally:
+            self.kill_server()
+            self.stopping.set()
+
+    def tray(self) -> bool:
+        """The icon next to the clock (Windows): open the window, or stop the program. False if not possible."""
+        if os.name != "nt":
+            return False
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except Exception:  # noqa: BLE001
+            return False
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.ellipse((4, 4, 60, 60), fill=(29, 78, 216, 255))
+        d.ellipse((22, 22, 42, 42), fill=(255, 255, 255, 255))
+        d.ellipse((28, 28, 36, 36), fill=(29, 78, 216, 255))
+
+        def show(icon=None, item=None):
+            _open_app_window(self.url)
+
+        def stop(icon, item=None):
+            self.note("stopped from the icon next to the clock")
+            self.stopping.set()
+            icon.stop()
+
+        icon = pystray.Icon("CCTV Analytics", img, "CCTV Analytics: شغال", menu=pystray.Menu(
+            pystray.MenuItem("افتح البرنامج", show, default=True),
+            pystray.MenuItem("أوقف البرنامج (الكاميرات ما تتحلل)", stop)))
+
+        def watch():
+            self.stopping.wait()
+            icon.stop()
+        threading.Thread(target=watch, daemon=True).start()
+        try:
+            icon.run()
+            return True
+        except Exception:  # noqa: BLE001
+            self.note("the icon next to the clock could not be shown")
+            return False
+
+
+def run_service(config: str, port: int, url: str) -> int:
+    """python run.py --service: the program in the background (started with Windows, or by the shortcut)."""
+    lock = _single_instance(ROOT / "data" / "service.lock")
+    if lock is None or _port_in_use(port):
+        return 0                            # already running
+    svc = Service(config, port, url)
+    svc.note("started")
+    result: list[int] = []
+    worker = threading.Thread(target=lambda: result.append(svc.loop()), name="service")
+    worker.start()
+    if not svc.tray():                      # no icon: just run
+        worker.join()
+    else:
+        svc.stopping.set()
+        worker.join()
+    return result[0] if result else 0
+
+
+def run_windowed(config: str, port: int, url: str) -> int:
+    """The desktop shortcut: start the background program if it is not running yet, then open its window.
+    Closing the window only closes the window: the cameras keep being watched."""
+    if not _port_in_use(port):
+        flags = 0x00000008 | 0x00000200 | 0x08000000 if os.name == "nt" else 0   # detached, own group, no window
+        subprocess.Popen([str(_windowless_python()), str(ROOT / "run.py"), "--config", config, "--service"],
+                         cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True,
+                         start_new_session=os.name != "nt")
+        deadline = time.time() + 180
+        while not _port_in_use(port):
+            if time.time() > deadline:
+                _message_box(f"CCTV Analytics could not start.\nDetails: {ROOT / 'data' / 'app.log'}")
                 return 1
-            open_now = _window_profile_open() if own_window else None
-            if open_now:
-                profile_seen = True
-            if profile_seen and open_now is False and now >= grace_until:
-                note("app window closed: stopping")
-                return 0                      # the window's browser has exited (closed or killed)
-            st = _window_state(url_local)
-            if st is None:
-                continue
-            if st["closed"] is not None and st["closed"] > 4:
-                note("app window said goodbye: stopping")
-                return 0                      # window closed by the user
-            if not profile_seen and st["idle"] > idle_limit and now >= grace_until:
-                note(f"no page activity for {int(st['idle'])}s: stopping")
-                return 0                      # window gone without a goodbye (only when the browser cannot be watched)
-    finally:
-        if server.poll() is None:
-            server.kill()
+            time.sleep(0.5)
+    _open_app_window(url)
+    return 0
+
+
+def stop_program(port: int, forget: bool) -> int:
+    """python run.py --stop [--forget]: stop the background program (and no longer start with Windows)."""
+    import urllib.request
+    if forget:
+        from app.autostart import set_start_with_windows
+        set_start_with_windows(ROOT, False)
+    if not _port_in_use(port):
+        return 0
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/window/quit", method="POST"),
+                               timeout=10).read()
+    except Exception:  # noqa: BLE001
+        pass
+    for _ in range(60):
+        if not _port_in_use(port):
+            return 0
+        time.sleep(0.5)
+    return 1
 
 
 def seed_demo(cfg: dict, days: int = 7) -> None:
@@ -236,6 +355,9 @@ def main():
     ap.add_argument("--no-cameras", action="store_true", help="start dashboard without camera workers")
     ap.add_argument("--open-browser", action="store_true", help="open the dashboard in the web browser")
     ap.add_argument("--app-window", action="store_true", help="desktop mode: show the dashboard in its own window")
+    ap.add_argument("--service", action="store_true", help="run in the background day and night (started with Windows)")
+    ap.add_argument("--stop", action="store_true", help="stop the program running in the background")
+    ap.add_argument("--forget", action="store_true", help="with --stop: no longer start with Windows")
     args = ap.parse_args()
 
     if sys.stdout is None or sys.stderr is None:   # started with pythonw.exe: no console
@@ -270,6 +392,10 @@ def main():
 
     host, port = cfg["server"]["host"], cfg["server"]["port"]
     url = f"http://localhost:{port}"
+    if args.stop:
+        sys.exit(stop_program(port, args.forget))
+    if args.service:
+        sys.exit(run_service(args.config, port, url))
     if args.app_window:
         sys.exit(run_windowed(args.config, port, url))
     if _port_in_use(port):
@@ -280,7 +406,9 @@ def main():
         return
 
     import uvicorn
+    from app import autostart
     from app.server import create_app
+    autostart.apply(cfg, ROOT)               # start with Windows (or not), as set in the settings
     api = create_app(cfg, start_cameras=not args.no_cameras)
     print(f"\n  Dashboard: {url}\n  (close this window to stop the program)\n")
     if args.open_browser:

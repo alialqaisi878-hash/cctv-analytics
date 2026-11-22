@@ -967,3 +967,70 @@ def test_fast_engine_kept_in_a_plain_folder_and_never_required(cfg, monkeypatch,
     assert d.status == "ready" and d.engine == "pytorch" and "no openvino here" in d.last_error
     assert d.detect("c1", np.zeros((480, 640, 3), np.uint8), timeout=30) == []
     d.stop()
+
+
+# ---------- 1.2.0: running day and night ----------
+def test_service_restarts_the_server_and_stops_only_when_asked(tmp_path, monkeypatch):
+    """The program now runs in the background: a crash or an online update starts the server again,
+    and only a stop request (icon next to the clock, settings page, uninstaller) ends it."""
+    import subprocess
+    import sys as _sys
+    import run as runner
+    from app.autostart import STOP_EXIT_CODE
+    from app.updater import RESTART_EXIT_CODE
+
+    codes = [1, RESTART_EXIT_CODE, STOP_EXIT_CODE]          # crash, update, stop
+    started = []
+    svc = runner.Service("config.yaml", 1, "http://localhost:1")
+    svc.log_path = tmp_path / "app.log"
+
+    def start_server():
+        started.append(time.time())
+        code = codes[min(len(started) - 1, len(codes) - 1)]
+        svc.server = subprocess.Popen([_sys.executable, "-c", f"import sys, time; time.sleep(0.3); sys.exit({code})"])
+        svc.started_at = time.time()
+    monkeypatch.setattr(svc, "start_server", start_server)
+    monkeypatch.setattr(svc, "_keep_awake", lambda: None)
+    assert svc.loop() == 0
+    assert len(started) == 3 and svc.restarts == 1
+    log = svc.log_path.read_text()
+    assert "stopped unexpectedly" in log and "online update" in log and "stopped on request" in log
+
+
+def test_service_starts_a_server_that_stopped_answering(tmp_path, monkeypatch):
+    import subprocess
+    import sys as _sys
+    import run as runner
+    svc = runner.Service("config.yaml", 1, "http://localhost:1")
+    svc.log_path = tmp_path / "app.log"
+    svc.HEALTH_EVERY, svc.HEALTH_GRACE, svc.HEALTH_FAILS = 0, 0, 2
+    started = []
+
+    def start_server():
+        started.append(1)
+        svc.server = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(60)"])
+        svc.started_at = time.time() - 1
+        if len(started) == 2:
+            threading.Timer(1.5, svc.stopping.set).start()
+    import threading
+    monkeypatch.setattr(svc, "start_server", start_server)
+    monkeypatch.setattr(svc, "_keep_awake", lambda: None)
+    monkeypatch.setattr(runner, "_alive", lambda port: False)    # a frozen server
+    svc.loop()
+    assert len(started) == 2 and "stopped answering" in svc.log_path.read_text()
+    assert svc.server.poll() is not None                          # nothing left running
+
+
+def test_quit_only_from_this_pc_and_startup_settings(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import server as srv
+    from app.server import create_app
+    api = create_app(cfg, start_cameras=False)
+    fired = []
+    monkeypatch.setattr(srv.threading, "Timer", lambda t, f: type("T", (), {"start": lambda self: fired.append(t)})())
+    assert TestClient(api, client=("192.168.1.20", 5000)).post("/api/window/quit").status_code == 403
+    assert not fired
+    assert TestClient(api, client=("127.0.0.1", 5000)).post("/api/window/quit").json() == {"ok": True} and fired
+    c = TestClient(api)
+    assert c.get("/api/settings").json()["startup"] == {"with_windows": True, "keep_awake": True}
+    assert c.post("/api/settings", json={"startup": {"with_windows": False}}).json()["startup"]["with_windows"] is False

@@ -66,6 +66,10 @@ DEFAULTS: dict[str, Any] = {
         "openai_model": "",             # "" = pick a current GPT model automatically
     },
     "server": {"host": "0.0.0.0", "port": 8000, "password": ""},
+    "startup": {
+        "with_windows": True,           # the program starts by itself when Windows starts (runs day and night)
+        "keep_awake": True,             # Windows does not go to sleep while the program runs
+    },
     "updates": {
         "enabled": True,
         "repo": "alialqaisi878-hash/cctv-analytics",
@@ -273,6 +277,7 @@ EDITABLE = {
     "server": {"password": _text(100)},
     "detector": {"process_fps": _int(1, 30), "confidence": _float(0.05, 0.95), "stream": _choice("fast", "high")},
     "updates": {"auto_install": bool},
+    "startup": {"with_windows": bool, "keep_awake": bool},
 }
 SECRET = {("agent", "api_key"), ("server", "password"), ("notify", "token")}
 

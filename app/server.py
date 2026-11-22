@@ -7,6 +7,7 @@ import csv
 import io
 import ipaddress
 import logging
+import os
 import secrets
 import threading
 import time
@@ -16,7 +17,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import discovery
+from . import autostart, discovery
 from .agent import Analyst
 from .analytics import LineCounter
 from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
@@ -476,6 +477,14 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         core.closed_at = time.time()
         return {"ok": True}
 
+    @api.post("/api/window/quit")
+    def quit_program():
+        """Stop the program for good (the icon next to the clock, the settings page, the uninstaller).
+        On this PC only: someone looking at the dashboard from another PC cannot switch the cameras off."""
+        log.info("asked to stop the program")
+        threading.Timer(0.5, lambda: os._exit(autostart.STOP_EXIT_CODE)).start()
+        return {"ok": True}
+
     @api.get("/api/window/state")
     def window_state():
         """For the desktop launcher: is a dashboard still open? (It stops the program when none is.)"""
@@ -496,6 +505,8 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         if cfg["faces"]["enabled"]:
             core.faces.ensure_ready()       # downloads the face models the first time
         core.analyst._openai_model_cache = None
+        if "startup" in payload:
+            autostart.apply(cfg)
         return public_settings(cfg)
 
     @api.post("/api/discover")

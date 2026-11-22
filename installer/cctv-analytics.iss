@@ -28,7 +28,6 @@ UninstallDisplayIcon={sys}\shell32.dll,22
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: "autostart"; Description: "Start automatically when Windows starts"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
 Source: "..\app\*"; DestDir: "{app}\app"; Excludes: "__pycache__,*.pyc"; Flags: recursesubdirs ignoreversion
@@ -49,13 +48,20 @@ Name: "{autoprograms}\{#AppName}\Repair {#AppName}"; Filename: "{sys}\WindowsPow
 Name: "{autoprograms}\{#AppName}\Install folder"; Filename: "{app}"
 Name: "{autoprograms}\{#AppName}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\launch.bat"; WorkingDir: "{app}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 22; Tasks: desktopicon
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\launch.bat"; Parameters: "--background"; WorkingDir: "{app}"; Tasks: autostart
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\setup.ps1"" -AppDir ""{app}"""; \
   StatusMsg: "Installing Python and AI libraries (5-15 minutes, needs internet)..."; Flags: waituntilterminated
 Filename: "{app}\launch.bat"; Description: "Start {#AppName} now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent shellexec
+
+[InstallDelete]
+; the old way of starting with Windows (a console window): the program now registers itself (see app/autostart.py)
+Type: files; Name: "{userstartup}\{#AppName}.lnk"
+
+[UninstallRun]
+; stop the program running in the background and no longer start it with Windows, before its files are removed
+Filename: "{app}\.venv\Scripts\python.exe"; Parameters: """{app}\run.py"" --stop --forget"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; RunOnceId: "StopService"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"

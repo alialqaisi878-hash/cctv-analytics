@@ -307,6 +307,9 @@
         <div class="card"><h2>الحماية والتحديثات</h2>
           <div class="field"><label for="s-pass">كلمة مرور للبرنامج<small id="s-pass-state"></small></label><input type="password" id="s-pass" autocomplete="new-password"></div>
           <div class="field"><label for="s-auto">تثبيت التحديثات تلقائياً خارج الدوام</label><input type="checkbox" id="s-auto"></div>
+          <div class="field"><label for="s-boot">يشتغل وحده من تشتغل الحاسبة<small>البرنامج يبقى شغال 24 ساعة حتى لو سديت نافذته. توقفه من أيقونته يم الساعة.</small></label><input type="checkbox" id="s-boot"></div>
+          <div class="field"><label for="s-awake">لا تخلي الحاسبة تنام وهو شغال<small>الشاشة تگدر تطفي، بس الكاميرات تبقى تتحلل.</small></label><input type="checkbox" id="s-awake"></div>
+          <div class="field"><label>إيقاف البرنامج<small id="quit-state">يوقف تحليل الكاميرات والتنبيهات لحد ما تفتحه مرة ثانية.</small></label><button class="btn ghost small" id="quit-btn">أوقف البرنامج</button></div>
           <div class="field"><label>الإصدار الحالي: <span id="s-ver" class="ltr"></span><small id="s-upd"></small></label><button class="btn ghost small" id="upd-check">تحقق من التحديثات</button></div>
           <div class="field"><label>فحص البرنامج<small>يبيّن شنو ديسوي البرنامج هسه وآخر سطور السجل. إذا صارت مشكلة انسخه ودزّه.</small></label><button class="btn ghost small" id="diag-open">افتح الفحص</button></div>
         </div>
@@ -922,7 +925,7 @@ async function loadSettings() {
   $("s-blur").checked = s.privacy.blur_people; $("s-notice").checked = s.privacy.show_notice; $("s-ret").value = s.privacy.retention_days;
   $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence; $("s-stream").value = s.detector.stream || "fast";
   $("s-pass").value = ""; $("s-pass-state").textContent = s.server.has_password ? "مفعّلة. اكتب كلمة جديدة لتغييرها" : "اختياري: يطلبها البرنامج عند الفتح";
-  $("s-auto").checked = s.updates.auto_install; $("set-state").textContent = "";
+  $("s-auto").checked = s.updates.auto_install; $("s-boot").checked = s.startup.with_windows; $("s-awake").checked = s.startup.keep_awake; $("set-state").textContent = "";
 }
 $("save").onclick = async () => {
   const body = {
@@ -937,6 +940,7 @@ $("save").onclick = async () => {
              kinds: [...document.querySelectorAll("#n-kinds input:checked")].map(i => i.value)},
     detector: {process_fps: $("s-fps").value, confidence: $("s-conf").value, stream: $("s-stream").value},
     server: {}, updates: {auto_install: $("s-auto").checked},
+    startup: {with_windows: $("s-boot").checked, keep_awake: $("s-awake").checked},
   };
   if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
   if ($("s-pass").value) body.server.password = $("s-pass").value;
@@ -945,6 +949,14 @@ $("save").onclick = async () => {
   try { await post("/api/settings", body); toast("انحفظت الإعدادات"); await loadInfo(); await loadSettings(); }
   catch (e) { $("set-state").textContent = e.message; toast("ما انحفظت: " + e.message); }
   $("save").disabled = false;
+};
+$("quit-btn").onclick = async () => {
+  if (!confirm("أكيد توقف البرنامج؟ الكاميرات ما راح تتحلل ولا تجي تنبيهات لحد ما تفتحه مرة ثانية.")) return;
+  try {
+    const r = await fetch("/api/window/quit", {method: "POST"});
+    if (!r.ok) throw new Error("يوقف بس من نفس الحاسبة اللي عليها البرنامج");
+    $("quit-state").textContent = "البرنامج وگف. تگدر تسد النافذة.";
+  } catch (e) { $("quit-state").textContent = e.message; }
 };
 $("n-kinds").innerHTML = Object.entries(KIND).map(([k, v]) => `<label><input type="checkbox" value="${k}">${v}</label>`).join("");
 function notifyForm() {
