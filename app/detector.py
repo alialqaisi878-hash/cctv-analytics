@@ -10,12 +10,32 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
+from pathlib import Path
+
+import numpy as np
 import threading
 import time
 
 log = logging.getLogger("cctv.detector")
 
 PERSON = 0  # COCO class id
+
+
+def _plain_dirs(near: Path):
+    """Folders for files OpenVINO must open: near the model if its path is plain, else elsewhere."""
+    seen = []
+    for d in (near, Path(os.environ.get("LOCALAPPDATA", "")) / "CCTVAnalytics" if os.environ.get("LOCALAPPDATA") else None,
+              Path(os.environ.get("PUBLIC", "")) / "CCTVAnalytics" if os.environ.get("PUBLIC") else None,
+              Path(os.environ.get("ProgramData", "")) / "CCTVAnalytics" if os.environ.get("ProgramData") else None,
+              Path(tempfile.gettempdir()) / "CCTVAnalytics"):
+        if d is None:
+            continue
+        d = d.absolute()
+        if str(d).isascii() and d not in seen:
+            seen.append(d)
+            yield d
 
 
 class _Request:
@@ -41,6 +61,7 @@ class SharedDetector:
         self._cond = threading.Condition()
         self._stop = threading.Event()
         self.status = "starting"
+        self.engine = ""                        # "openvino" (fast, normal processors) or "pytorch"
         self.rate = 0.0                         # pictures analysed per second, all cameras together
         self.batch_s = 0.0                      # seconds one batch takes
         self.busy = 0.0                         # share of the time the detector is working (1.0 = flat out)
@@ -85,7 +106,7 @@ class SharedDetector:
     def snapshot(self) -> dict:
         return {"status": self.status, "rate": round(self.rate, 1), "busy": round(self.busy, 2),
                 "batch_s": round(self.batch_s, 2),
-                "batch": self.batch, "waiting": len(self._pending), "error": self.last_error}
+                "batch": self.batch, "engine": self.engine, "waiting": len(self._pending), "error": self.last_error}
 
     # ---------- the detector thread ----------
     def _load(self):
@@ -98,7 +119,70 @@ class SharedDetector:
         except Exception:  # noqa: BLE001
             pass
         from ultralytics import YOLO  # imported lazily: heavy
-        self._model = YOLO(self.cfg["detector"]["model"])
+        det = self.cfg["detector"]
+        self._model = YOLO(det["model"])
+        engine = "pytorch"
+        if self._wants_openvino(det):
+            self.status = "preparing the fast engine (first start only, about a minute)"
+            try:
+                path = self._openvino_model(self._model, det)
+                fast = YOLO(str(path), task="detect")
+                fast.predict([np.zeros((det["imgsz"], det["imgsz"], 3), np.uint8)] * 2, imgsz=det["imgsz"],
+                             classes=[PERSON], verbose=False)       # proves it works before the cameras use it
+                self._model, engine = fast, "openvino"
+                if not self._fixed:
+                    self.max_batch = 8          # OpenVINO gets faster per picture with bigger batches
+            except Exception as e:  # noqa: BLE001 - the normal engine still works, only slower
+                self.last_error = f"fast engine not used: {type(e).__name__}: {e}"[:300]
+                log.exception("OpenVINO engine could not be prepared, using PyTorch")
+        self.engine = engine
+
+    @staticmethod
+    def _wants_openvino(det: dict) -> bool:
+        """OpenVINO runs the same model about 2-3 times faster on a normal processor (no graphics card)."""
+        want = str(det.get("engine", "auto")).lower()
+        if want == "pytorch" or str(det.get("device") or "cpu").lower() not in ("cpu", "none", ""):
+            return False
+        try:
+            import torch
+            if want == "auto" and torch.cuda.is_available():
+                return False                    # a graphics card is faster still
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            import openvino  # noqa: F401
+        except Exception:  # noqa: BLE001
+            return False
+        return True
+
+    @staticmethod
+    def _openvino_model(model, det: dict) -> Path:
+        """The model converted for OpenVINO, made once and kept. Kept in a folder whose path is plain English
+        letters only: OpenVINO cannot open files under a path like D:\\برامج on Windows."""
+        src = Path(getattr(model, "ckpt_path", None) or det["model"])
+        name = f"{src.stem}_{det['imgsz']}_openvino_model"
+        for base in _plain_dirs(src.parent):
+            target = base / name
+            if (target / f"{src.stem}.xml").exists():
+                return target
+            try:
+                base.mkdir(parents=True, exist_ok=True)
+                work = base / f"{src.stem}.pt"
+                if work.resolve() != src.resolve():
+                    shutil.copy2(src, work)
+                from ultralytics import YOLO
+                out = Path(YOLO(str(work)).export(format="openvino", imgsz=det["imgsz"], dynamic=True, batch=8,
+                                                  half=False, verbose=False))
+                shutil.rmtree(target, ignore_errors=True)
+                out.rename(target)
+                for f in target.glob("*.xml"):
+                    if f.stem != src.stem:
+                        f.rename(target / f"{src.stem}.xml")
+                        f.with_suffix(".bin").rename(target / f"{src.stem}.bin")
+                return target
+            except OSError:
+                log.warning("cannot write the fast engine to %s, trying another folder", base)
+        raise RuntimeError("no folder to keep the fast engine in")
 
     def _run(self) -> None:
         try:

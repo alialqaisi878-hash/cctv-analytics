@@ -917,3 +917,53 @@ def test_many_cameras_decode_light_and_only_make_pictures_when_needed(cfg):
     t.join(30)
     assert c.grabs > 290 and 3 <= c.made < c.grabs / 4, (c.grabs, c.made)   # most frames never became pictures
     assert w.analysed_at
+
+
+# ---------- 1.1.9: faster ----------
+def test_very_sure_moving_person_counts_at_first_sight(cfg):
+    """With 32 cameras the next look at a camera can be seconds away: someone the detector is very sure of
+    and who moves counts at once; a sure box that does not move still has to be seen twice."""
+    cfg["alerts"]["after_hours_presence"] = True
+    cfg["working_hours"]["days"] = []
+    person = [300, 100, 380, 400]
+    w = _raw_worker(cfg, [[]] + [[(person, 0.8)]] * 2)
+    t = time.time()
+    w._process(np.full((480, 640, 3), 30, np.uint8), t)                 # the empty room
+    frame = np.full((480, 640, 3), 30, np.uint8)
+    frame[100:400, 300:380] = 200                                        # someone walks in
+    w._process(frame, t + 3)
+    assert w.people_now == 1
+    assert [a["kind"] for a in w.db.alerts(w.db.today())] == ["after_hours"]
+
+    still = _raw_worker(cfg, [[]] + [[(person, 0.8)]] * 2)
+    still._process(np.full((480, 640, 3), 30, np.uint8), t)
+    still._process(np.full((480, 640, 3), 30, np.uint8), t + 3)           # a sure box, nothing moved: wait
+    assert still.people_now == 0
+    still._process(np.full((480, 640, 3), 30, np.uint8), t + 3.5)
+    assert still.people_now == 1
+
+
+def test_fast_engine_kept_in_a_plain_folder_and_never_required(cfg, monkeypatch, tmp_path):
+    """OpenVINO cannot open files under an Arabic folder name (the app is installed under D:\\برامج), so the
+    converted model goes to a plain folder; and if it cannot be made, the normal engine is used."""
+    from app import detector as D
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    dirs = list(D._plain_dirs(Path(tmp_path / "برامج")))
+    assert dirs and dirs[0] == (tmp_path / "local" / "CCTVAnalytics").absolute() and all(str(d).isascii() for d in dirs)
+
+    assert not D.SharedDetector._wants_openvino({"engine": "pytorch"})
+    assert not D.SharedDetector._wants_openvino({"device": "cuda:0"})
+
+    def broken(model, det):
+        raise RuntimeError("no openvino here")
+    monkeypatch.setattr(D.SharedDetector, "_wants_openvino", staticmethod(lambda det: True))
+    monkeypatch.setattr(D.SharedDetector, "_openvino_model", staticmethod(broken))
+    cfg["detector"]["model"] = "models/yolo11n.pt"
+    d = D.SharedDetector(cfg)
+    for _ in range(300):
+        if d.status in ("ready",) or d.status.startswith("model error"):
+            break
+        time.sleep(0.1)
+    assert d.status == "ready" and d.engine == "pytorch" and "no openvino here" in d.last_error
+    assert d.detect("c1", np.zeros((480, 640, 3), np.uint8), timeout=30) == []
+    d.stop()

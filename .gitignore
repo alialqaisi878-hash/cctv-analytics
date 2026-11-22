@@ -8,3 +8,4 @@ __pycache__/
 tools/
 app/static/vendor/
 tests/.cache/
+*_openvino_model/
