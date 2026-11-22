@@ -11,3 +11,4 @@ pytest                  # for running the tests
 httpx>=0.27              # WhatsApp / Telegram alerts and the OpenAI assistant
 arabic-reshaper>=3.0     # Arabic names drawn on the live picture
 python-bidi>=0.4
+pystray>=0.19; sys_platform == "win32"   # the icon next to the clock (open / stop the program)

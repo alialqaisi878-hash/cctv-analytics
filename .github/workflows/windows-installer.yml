@@ -160,24 +160,39 @@ jobs:
           $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
           Write-Host "app window processes: $(@($win).Count) $(@($win).Name -join ',')"
           if (-not $win) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "app window was not opened"; exit 1 }
-          # 1) the program must NOT stop while its window is open, even though nothing else is going on
-          Start-Sleep 12
-          if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "program stopped while its window was open"; exit 1 }
-          Invoke-RestMethod http://127.0.0.1:8000/api/window/state | ConvertTo-Json -Compress
-          # 2) closing the window must stop it (asked to close politely; a killed window is covered by the idle limit)
-          $polite = $false
-          $win | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p -and $p.CloseMainWindow()) { $polite = $true } }
-          Write-Host "window closed politely: $polite"
+          # the program runs day and night: closing its window must NOT stop it
+          $win | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { $p.CloseMainWindow() | Out-Null } }
           Start-Sleep 3
           Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep 15
+          if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "program stopped when its window was closed"; exit 1 }
+          $svc = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--service*" }
+          if (-not $svc) { Write-Error "the background service is not running"; exit 1 }
+          Write-Host "background service: $(@($svc).Name -join ',') $(@($svc).CommandLine -join ' | ')"
+          # it starts with Windows (per user, no administrator rights)
+          $run = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -ErrorAction SilentlyContinue)."CCTV Analytics"
+          Write-Host "starts with Windows: $run"
+          if ($run -notlike "*pythonw.exe*run.py*--service*") { Write-Error "the program does not start with Windows"; exit 1 }
+          # a crash: the service starts the server again by itself
+          $srv = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--config*" -and $_.CommandLine -notlike "*--service*" }
+          if (-not $srv) { Write-Error "server process not found"; exit 1 }
+          $srv | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+          $back = $false
+          for ($i = 0; $i -lt 90; $i++) { Start-Sleep 2; try { Invoke-RestMethod http://localhost:8000/api/info | Out-Null; $back = $true; Write-Host "server back after a crash in $(($i + 1) * 2)s"; break } catch { } }
+          if (-not $back) { Get-Content "$dir\data\app.log" -Tail 30; Write-Error "the server did not come back after a crash"; exit 1 }
+          # opening the shortcut again while it runs: only the window opens, no second copy
+          Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir
+          Start-Sleep 10
+          $n = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--service*" }).Count
+          if ($n -ne 1) { Write-Error "expected one background service, found $n"; exit 1 }
+          Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          # stopping it for good (what the icon next to the clock, the settings page and the uninstaller do)
+          & "$dir\.venv\Scripts\python.exe" "$dir\run.py" --stop
           $stopped = $false
-          for ($i = 0; $i -lt 60; $i++) {
-            Start-Sleep 1
-            if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; Write-Host "program stopped after $($i + 4)s"; break }
-          }
+          for ($i = 0; $i -lt 30; $i++) { Start-Sleep 1; if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) -and -not (Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--service*" })) { $stopped = $true; break } }
           Get-Content "$dir\data\app.log" -Tail 15
-          if (-not $stopped) { Write-Error "program kept running after its window was closed"; exit 1 }
-          if (-not (Select-String -Path "$dir\data\app.log" -Pattern "launcher app window (closed|said goodbye)" -Quiet)) { Write-Error "the program did not stop because of the window"; exit 1 }
+          if (-not $stopped) { Write-Error "the program did not stop when asked"; exit 1 }
+          if (-not (Select-String -Path "$dir\data\app.log" -Pattern "service stopped on request" -Quiet)) { Write-Error "the service did not log its stop"; exit 1 }
           if (-not $ok) { Write-Error "camera pipeline did not come online"; exit 1 }
 
       - name: Online update while the program is running
@@ -220,13 +235,12 @@ jobs:
           if (-not (Select-String -Path "$dir\config.yaml" -Pattern "^demo: true" -Quiet)) { Write-Error "the update overwrote config.yaml"; exit 1 }
           $win = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" -and $_.CommandLine -notlike "*--type=*" }
           if (-not $win) { Write-Error "app window is gone after the update"; exit 1 }
-          $win | ForEach-Object { $p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { $p.CloseMainWindow() | Out-Null } }
-          Start-Sleep 3
           Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          & "$dir\.venv\Scripts\python.exe" "$dir\run.py" --stop
           $stopped = $false
-          for ($i = 0; $i -lt 60; $i++) { Start-Sleep 1; if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; break } }
+          for ($i = 0; $i -lt 30; $i++) { Start-Sleep 1; if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) { $stopped = $true; break } }
           Stop-Process -Id $web.Id -Force -ErrorAction SilentlyContinue
-          if (-not $stopped) { Write-Error "program kept running after its window was closed (after update)"; exit 1 }
+          if (-not $stopped) { Write-Error "program did not stop when asked (after update)"; exit 1 }
           Write-Host "online update test passed"
 
       - name: Run tests on Windows

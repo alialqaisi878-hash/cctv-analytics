@@ -42,6 +42,18 @@ try {
     Write-Host "CCTV Analytics setup. This downloads about 300-600 MB and can take 5-15 minutes." -ForegroundColor Green
     Write-Host "Install folder: $AppDir"
 
+    # The program runs in the background day and night: stop it first, or its libraries cannot be updated.
+    $running = $false
+    try { $running = [bool](Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Stop) } catch { }
+    if ($running) {
+        Step "Stopping the running program"
+        try { Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/window/quit" -Method Post -UseBasicParsing -TimeoutSec 10 | Out-Null } catch { }
+        for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep 1
+            try { if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Stop)) { break } } catch { break }
+        }
+    }
+
     # uv (https://github.com/astral-sh/uv) is used as a fast, reliable package installer.
     $tools = Join-Path $AppDir "tools"
     $uv = Join-Path $tools "uv.exe"
