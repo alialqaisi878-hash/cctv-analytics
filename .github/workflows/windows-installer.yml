@@ -183,7 +183,10 @@ jobs:
           # opening the shortcut again while it runs: only the window opens, no second copy
           Start-Process "$env:ComSpec" -ArgumentList "/c", "launch.bat" -WorkingDirectory $dir
           Start-Sleep 10
-          $n = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--service*" }).Count
+          # (a venv's pythonw.exe starts the real Python as its child: count only the top process of each copy)
+          $svcs = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*run.py*--service*" })
+          $ids = $svcs | ForEach-Object { $_.ProcessId }
+          $n = @($svcs | Where-Object { $ids -notcontains $_.ParentProcessId }).Count
           if ($n -ne 1) { Write-Error "expected one background service, found $n"; exit 1 }
           Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*--app=http://localhost:8000*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
           # stopping it for good (what the icon next to the clock, the settings page and the uninstaller do)
