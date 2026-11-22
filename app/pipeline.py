@@ -22,7 +22,7 @@ log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
 MIN_PERSON_H = 0.04    # boxes smaller than this part of the picture height are ignored
 HOLD_S = 3.0           # a person the detector misses for a moment still counts for this long
-QUIET_S = 30.0          # a camera where nothing moves and nobody is seen is still analysed this often
+QUIET_S = 30.0          # when the detector is busy, a camera where nothing moves is still analysed this often
 GHOST_S = 600          # things seen weakly and never accepted are remembered this long (so they are not "new" again)
 VIEW_WIDTH = 1280      # pictures shown/saved are scaled down to this width (cameras often send 4-8 MP)
 
@@ -272,7 +272,8 @@ class CameraWorker(threading.Thread):
             dets = None
             if self.detector is not None and self._model is None:
                 weight = self._priority(moving)
-                if weight <= 1.0 and self.analysed_at and ts - self.analysed_at < QUIET_S:
+                if (weight <= 1.0 and self.analysed_at and ts - self.analysed_at < QUIET_S
+                        and self.detector.busy > 0.6):
                     return False                # nothing moves and nobody is here: leave the detector to others
                 dets = self.detector.detect(self.id, frame, weight, self.analysed_at or None)
                 if dets is None:
@@ -493,8 +494,10 @@ class CameraWorker(threading.Thread):
             o.hits += 1
             # sure and shaped like a person (taller than wide: drops desks, bags, shadows)
             if c >= sure and bh >= 0.8 * bw:
-                # the tracker only gives an id to what it matched twice already, so with an id once is enough
-                o.strong += 2 if any(_iou(b, fb) > 0.5 for fb in followed) else 1
+                # the tracker only gives an id to what it matched twice already, so with an id once is enough;
+                # very sure and moving is a person at once (with many cameras the next look can be seconds away)
+                once = any(_iou(b, fb) > 0.5 for fb in followed) or (c >= max(sure + 0.15, 0.6) and moved(b))
+                o.strong += 2 if once else 1
             o.motion += moved(b)
             o.changed = o.changed or _iou(b, o.first_box) < 0.5
             # a person: the detector is sure twice, or it is less sure but the thing keeps being seen, moves and
