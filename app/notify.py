@@ -57,7 +57,8 @@ class Notifier:
     def wants(self, kind: str) -> bool:
         kinds = self.n.get("kinds") or []
         base = kind.split(":", 1)[0]
-        return self.enabled and (not kinds or base in kinds)
+        # fire and smoke always go out, whatever kinds were picked
+        return self.enabled and (not kinds or base in kinds or base in ("fire", "smoke"))
 
     def queue_alert(self, kind: str, text: str, jpeg: bytes | None, meta: dict | None = None) -> None:
         if not self.wants(kind):

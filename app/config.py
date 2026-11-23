@@ -47,6 +47,17 @@ DEFAULTS: dict[str, Any] = {
         "camera_offline": True,     # alert when a camera stops sending pictures
         "unknown_after_hours": False,  # (face recognition) alert for unknown faces outside working hours
     },
+    "hazard": {                     # fire and smoke (see app/hazard.py): alerts at any hour
+        "enabled": True,
+        "fire": True,
+        "smoke": True,
+        "every_s": 5,               # each camera is looked at this often
+        "fire_confidence": 0.45,
+        "smoke_confidence": 0.5,
+        "cooldown_minutes": 5,      # the same camera alerts again for the same thing after this long
+        "imgsz": 640,
+        "model": "",                # "" = the model that comes with the program
+    },
     "notify": {                     # send alerts with their picture to WhatsApp / Telegram (see app/notify.py)
         "provider": "",             # "" | greenapi | ultramsg | telegram | webhook (n8n...)
         "instance": "",
@@ -271,6 +282,9 @@ EDITABLE = {
                "camera_offline": bool, "unknown_after_hours": bool},
     "agent": {"daily_report_time": _time, "api_key": _text(300), "provider": _choice("auto", "claude", "openai"),
               "openai_model": _text(60)},
+    "hazard": {"enabled": bool, "fire": bool, "smoke": bool, "every_s": _int(2, 60),
+               "fire_confidence": _float(0.2, 0.9), "smoke_confidence": _float(0.2, 0.9),
+               "cooldown_minutes": _int(1, 120)},
     "faces": {"enabled": bool, "threshold": _float(0.25, 0.8), "present_minutes": _int(1, 720)},
     "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
                "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},

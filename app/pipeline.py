@@ -48,10 +48,13 @@ class _Seen:
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None, maps=None, detector=None):
+    def __init__(self, cam: dict, cfg: dict, db: Database, faces=None, notifier=None, maps=None, detector=None,
+                 hazard=None):
         super().__init__(daemon=True, name=f"cam-{cam['id']}")
         self.cam, self.cfg, self.db = cam, cfg, db
         self.faces, self.notifier, self.maps = faces, notifier, maps    # FaceEngine / Notifier / FloorMaps, optional
+        self.hazard = hazard                    # HazardWatch (fire and smoke), optional
+        self._hazard_at: dict[str, float] = {}
         self.id = cam["id"]
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -268,6 +271,8 @@ class CameraWorker(threading.Thread):
         """One picture through the analysis; an error in one picture never stops the camera.
         False when the shared detector had no time for this picture (the camera tries its next one)."""
         try:
+            if self.hazard is not None:
+                self.hazard.offer(self, frame, ts)      # fire and smoke: looked at separately, never waits
             moving = self._moving(frame)
             dets = None
             if self.detector is not None and self._model is None:
@@ -631,6 +636,27 @@ class CameraWorker(threading.Thread):
                 t = self.db.local(ts).strftime("%H:%M")
                 self.notifier.queue_alert(kind, f"🔔 {msg}\n{t}", self._analysed_jpeg, self._meta(pid))
         self._pending.clear()
+
+    def hazard_alert(self, ts: float, kind: str, conf: float, frame: np.ndarray, boxes) -> None:
+        """Fire or smoke seen (called from the fire watcher's thread). At any hour, with its own short pause."""
+        pause = float(self.cfg["hazard"].get("cooldown_minutes", 5)) * 60
+        if ts - self._hazard_at.get(kind, 0.0) < pause:
+            return
+        self._hazard_at[kind] = ts
+        marked = frame.copy()
+        thick = max(2, frame.shape[1] // 400)
+        for x1, y1, x2, y2 in boxes:
+            cv2.rectangle(marked, (int(x1), int(y1)), (int(x2), int(y2)), (0, 0, 255), thick)
+        jpg = self._render(marked, self._tracks, mark_only=True)
+        word = "نار" if kind == "fire" else "دخان"
+        msg = f"خطر: {word} في {self.cam['name']} (متأكد {int(conf * 100)}%)"
+        keep = jpg if self.cfg["privacy"].get("save_alert_pictures", True) else None
+        self.db.add_alert(ts, self.id, kind, msg, keep, None)
+        log.warning("ALERT %s %s: %s", self.id, kind, msg)
+        if self.notifier:
+            t = self.db.local(ts).strftime("%H:%M")
+            icon = "🔥" if kind == "fire" else "💨"
+            self.notifier.queue_alert(kind, f"{icon}🚨 {msg}\n{t}\nافتح الصورة وتأكد فوراً", jpg, self._meta(None))
 
     def _log_stats(self, ts: float) -> None:
         """Once a minute: what this camera is doing, so a problem on the owner's PC can be read from app.log."""
