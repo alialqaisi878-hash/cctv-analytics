@@ -24,6 +24,7 @@ from .config import (add_local_camera, apply_settings, in_working_hours, local_c
                      notice_text, public_settings, remove_local_camera, set_camera_lines)
 from .db import Database
 from .detector import SharedDetector
+from .hazard import HazardWatch
 from .faces import FaceEngine, decode_image
 from .floormap import FloorMaps
 from .notify import Notifier
@@ -47,6 +48,7 @@ class App:
         self.maps = FloorMaps(Path(cfg["database"]).parent)
         self.workers: dict[str, CameraWorker] = {}
         self.detector: SharedDetector | None = None    # one model for all cameras, started with the first camera
+        self.hazard = HazardWatch(cfg)                  # fire and smoke (its model loads only when switched on)
         if start_cameras:
             for cam in cfg["cameras"]:
                 if cam["enabled"]:
@@ -60,7 +62,7 @@ class App:
     def start_worker(self, cam: dict) -> CameraWorker:
         if self.detector is None:
             self.detector = SharedDetector(self.cfg)
-        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps, self.detector)
+        w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps, self.detector, self.hazard)
         self.workers[cam["id"]] = w
         w.start()
         return w
@@ -557,6 +559,9 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             d = core.detector.snapshot()
             lines.append(f"shared detector: {d['status']}, engine {d['engine'] or '-'}, {d['rate']} pictures/s for all cameras, busy {int(d['busy'] * 100)}%, "
                          f"{d['batch']} at a time ({d['batch_s']} s each), waiting {d['waiting']}" + (f", last error: {d['error']}" if d["error"] else ""))
+        hz = core.hazard.snapshot()
+        lines.append(f"fire and smoke: on {hz['enabled']}, {hz['status']}, engine {hz['engine'] or '-'}, "
+                     f"{hz['rate']} pictures/s, looked {hz['looks']} times" + (f", last error: {hz['error']}" if hz["error"] else ""))
         lines += ["", f"cameras ({len(cfg['cameras'])}):"]
         for cam in list(cfg["cameras"]):
             w = core.workers.get(cam["id"])
