@@ -8,6 +8,7 @@ looked at every few seconds.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -21,6 +22,14 @@ import time
 log = logging.getLogger("cctv.detector")
 
 PERSON = 0  # COCO class id
+# OpenVINO hung for good when two models (people, fire) were prepared or ran at the same moment in two threads:
+# every use of a model engine goes through this lock, one at a time (each run still uses all the cores)
+ENGINE_LOCK = threading.RLock()
+
+
+def engine_guard(model) -> "threading.RLock | contextlib.nullcontext":
+    """The lock for a real model; nothing for a test's stand-in."""
+    return ENGINE_LOCK if model is None or type(model).__module__.startswith("ultralytics") else contextlib.nullcontext()
 
 
 def _plain_dirs(near: Path):
@@ -186,7 +195,8 @@ class SharedDetector:
 
     def _run(self) -> None:
         try:
-            self._load()
+            with engine_guard(self._model):
+                self._load()
             self.status = "ready"
         except Exception as e:  # noqa: BLE001
             self.status = f"model error: {e}"
@@ -242,7 +252,8 @@ class SharedDetector:
         det = self.cfg["detector"]
         sure = det["confidence"]
         low = min(sure, max(0.2, sure * 0.5))   # weaker guesses too: the cameras decide which of them are people
-        res = self._model.predict(frames, classes=[PERSON], conf=low, imgsz=det["imgsz"], device=det.get("device"),
+        with engine_guard(self._model):
+            res = self._model.predict(frames, classes=[PERSON], conf=low, imgsz=det["imgsz"], device=det.get("device"),
                                   verbose=False)
         out = []
         for r in res:

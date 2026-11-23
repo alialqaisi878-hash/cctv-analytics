@@ -91,7 +91,7 @@
   tr.click { cursor:pointer; } tr.click:hover td { background:var(--card2); } tr.unseen td:first-child { box-shadow:inset -3px 0 0 var(--warn); }
   .thumb { width:64px; height:40px; object-fit:cover; border-radius:6px; background:#000; display:block; }
   .kind { font-size:12px; border-radius:99px; padding:2px 9px; background:#222c38; color:var(--muted); white-space:nowrap; }
-  .kind.after_hours { background:rgba(239,100,97,.14); color:var(--warn); } .kind.crowding { background:rgba(240,168,64,.14); color:var(--out); } .kind.fire, .kind.smoke { background:rgba(239,60,50,.25); color:#ff8a80; font-weight:700; }
+  .kind.after_hours { background:rgba(239,100,97,.14); color:var(--warn); } .kind.crowding { background:rgba(240,168,64,.14); color:var(--out); } .kind.fire, .kind.smoke, .kind.flame { background:rgba(239,60,50,.25); color:#ff8a80; font-weight:700; }
   .kind.person { background:rgba(91,156,245,.15); color:#8fb8f8; } .kind.offline { background:#2a2f36; color:#c9d1d9; } .kind.unknown { background:rgba(180,140,242,.15); color:#c8a9f5; }
   .bigpic { width:100%; border-radius:10px; background:#000; display:block; max-height:65vh; object-fit:contain; }
   #popup { position:fixed; bottom:20px; inset-inline-end:20px; width:330px; background:var(--card); border:1px solid var(--warn); border-radius:14px; box-shadow:0 10px 40px rgba(0,0,0,.5); z-index:60; cursor:pointer; overflow:hidden; }
@@ -189,7 +189,7 @@
       <div class="top">
         <div><h1>التنبيهات</h1><div class="sub">اضغط على أي تنبيه حتى تشوف صورته</div></div>
         <div class="tools"><label class="muted" for="al-day">اليوم</label><input type="date" id="al-day">
-          <select id="al-kind"><option value="">كل الأنواع</option><option value="after_hours">خارج الدوام</option><option value="crowding">ازدحام</option><option value="person">شخص مسجّل</option><option value="unknown">شخص غير معروف</option><option value="offline">كاميرا مفصولة</option><option value="fire">نار</option><option value="smoke">دخان</option></select>
+          <select id="al-kind"><option value="">كل الأنواع</option><option value="after_hours">خارج الدوام</option><option value="crowding">ازدحام</option><option value="person">شخص مسجّل</option><option value="unknown">شخص غير معروف</option><option value="offline">كاميرا مفصولة</option><option value="fire">نار</option><option value="smoke">دخان</option><option value="flame">لهب صغير</option></select>
           <button class="btn ghost" id="al-all">عرض كل الأيام</button><button class="btn" id="al-seen">علّم الكل مقروء</button></div>
       </div>
       <div class="card"><table><thead><tr><th style="width:80px"></th><th>الوقت</th><th>النوع</th><th>التفاصيل</th><th>الكاميرا</th></tr></thead><tbody id="al-list"></tbody></table></div>
@@ -306,6 +306,7 @@
           <div class="field"><label for="h-every">كل كم ثانية يفحص كل كاميرا<small>أقل = أسرع بالكشف بس ضغط أكثر على الحاسبة. المقترح 5</small></label><input type="number" id="h-every" min="2" max="60"></div>
           <div class="field"><label for="h-fconf">حساسية النار<small>أعلى = تنبيهات كاذبة أقل. المقترح 0.45</small></label><input type="number" id="h-fconf" min="0.2" max="0.9" step="0.05"></div>
           <div class="field"><label for="h-sconf">حساسية الدخان<small>المقترح 0.5</small></label><input type="number" id="h-sconf" min="0.2" max="0.9" step="0.05"></div>
+          <div class="field" style="display:block"><label>مراقبة اللهب الصغير (جداحة، شخاط) <small>اختار لحد 4 كاميرات مهمة، مثل المخزن أو مكان ممنوع بيه التدخين. هاي الكاميرات تنفحص كل صورة بالجودة العالية، فتاخذ من الحاسبة أكثر.</small></label><div class="days" id="h-flame" style="margin-top:8px"></div><small id="h-flame-state"></small></div>
         </div>
         <div class="card"><h2>الأداء</h2>
           <div class="field"><label for="s-stream">جودة بث الكاميرات<small>"سريع" يستخدم البث الثاني الخفيف للكاميرا: صورة سلسة وضغط أقل بكثير على الحاسبة</small></label><select id="s-stream"><option value="fast">سريع (ينصح به)</option><option value="high">جودة عالية (أبطأ)</option></select></div>
@@ -665,7 +666,7 @@ async function loadStats() {
 $("day").onchange = loadStats;
 
 // ---------- alerts ----------
-const KIND = {after_hours:"خارج الدوام", crowding:"ازدحام", person:"شخص مسجّل", unknown:"غير معروف", offline:"كاميرا مفصولة", fire:"🔥 نار", smoke:"💨 دخان"};
+const KIND = {after_hours:"خارج الدوام", crowding:"ازدحام", person:"شخص مسجّل", unknown:"غير معروف", offline:"كاميرا مفصولة", fire:"🔥 نار", smoke:"💨 دخان", flame:"🔥 لهب صغير"};
 let alertCache = {};
 const camName = (id) => (lastCams.find(c => c.id === id) || {}).name || id;
 async function loadAlerts() {
@@ -918,6 +919,7 @@ const DAYS = [[5,"السبت"],[6,"الأحد"],[0,"الاثنين"],[1,"الث�
 $("s-days").innerHTML = DAYS.map(([n, name]) => `<label><input type="checkbox" value="${n}">${name}</label>`).join("");
 async function loadSettings() {
   const s = await j("/api/settings");
+  if (!lastCams.length) { try { lastCams = await j("/api/cameras"); } catch (e) {} }
   $("s-site").value = s.site_name; $("s-start").value = s.working_hours.start; $("s-end").value = s.working_hours.end;
   document.querySelectorAll("#s-days input").forEach(i => i.checked = s.working_hours.days.includes(+i.value));
   $("s-after").checked = s.alerts.after_hours_presence; $("s-max").value = s.alerts.max_occupancy; $("s-cool").value = s.alerts.cooldown_minutes;
@@ -934,6 +936,9 @@ async function loadSettings() {
   $("s-fps").value = s.detector.process_fps; $("s-conf").value = s.detector.confidence; $("s-stream").value = s.detector.stream || "fast";
   $("s-pass").value = ""; $("s-pass-state").textContent = s.server.has_password ? "مفعّلة. اكتب كلمة جديدة لتغييرها" : "اختياري: يطلبها البرنامج عند الفتح";
   const hz = s.hazard || {}; $("h-on").checked = !!hz.enabled; $("h-fire").checked = hz.fire !== false; $("h-smoke").checked = hz.smoke !== false;
+  const chosen = new Set(hz.flame_cameras || []);
+  $("h-flame").innerHTML = (lastCams || []).map(c => `<label><input type="checkbox" value="${esc(c.id)}"${chosen.has(c.id) ? " checked" : ""}> ${esc(c.name)}</label>`).join("") || "<small>ماكو كاميرات بعد</small>";
+  $("h-flame").onchange = () => { const n = document.querySelectorAll("#h-flame input:checked").length; $("h-flame-state").textContent = n > 4 ? "اختار 4 كاميرات بالأكثر" : ""; };
   $("h-every").value = hz.every_s || 5; $("h-fconf").value = hz.fire_confidence || 0.45; $("h-sconf").value = hz.smoke_confidence || 0.5;
   $("s-auto").checked = s.updates.auto_install; $("s-boot").checked = s.startup.with_windows; $("s-awake").checked = s.startup.keep_awake; $("set-state").textContent = "";
 }
@@ -952,7 +957,8 @@ $("save").onclick = async () => {
     server: {}, updates: {auto_install: $("s-auto").checked},
     startup: {with_windows: $("s-boot").checked, keep_awake: $("s-awake").checked},
     hazard: {enabled: $("h-on").checked, fire: $("h-fire").checked, smoke: $("h-smoke").checked, every_s: $("h-every").value,
-             fire_confidence: $("h-fconf").value, smoke_confidence: $("h-sconf").value},
+             fire_confidence: $("h-fconf").value, smoke_confidence: $("h-sconf").value,
+             flame_cameras: [...document.querySelectorAll("#h-flame input:checked")].map(i => i.value).slice(0, 4)},
   };
   if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
   if ($("s-pass").value) body.server.password = $("s-pass").value;

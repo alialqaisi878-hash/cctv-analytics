@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .detector import SharedDetector
+from .detector import SharedDetector, engine_guard
 
 log = logging.getLogger("cctv.hazard")
 
@@ -111,7 +111,8 @@ class HazardWatch:
     def _run(self) -> None:
         self.status = "loading"
         try:
-            self._load()
+            with engine_guard(self._model):
+                self._load()
         except Exception as e:  # noqa: BLE001
             self.status, self.last_error = "not working", f"{type(e).__name__}: {e}"[:300]
             log.exception("fire model could not be loaded")
@@ -152,7 +153,8 @@ class HazardWatch:
         h = self.h
         sure = {"fire": float(h.get("fire_confidence", 0.45)), "smoke": float(h.get("smoke_confidence", 0.5))}
         want = set(k for k in ("fire", "smoke") if h.get(k, True))
-        res = self._model.predict(frames, conf=min(sure.values()), imgsz=int(h.get("imgsz", 640)), verbose=False)
+        with engine_guard(self._model):
+            res = self._model.predict(frames, conf=min(sure.values()), imgsz=int(h.get("imgsz", 640)), verbose=False)
         out = []
         for frame, r in zip(frames, res):
             names = getattr(r, "names", None) or getattr(self._model, "names", {}) or {}

@@ -17,6 +17,7 @@ from .analytics import LineCounter, ZoneTracker
 from .config import in_working_hours
 from .db import Database
 from .discovery import sub_stream_url
+from .flame import MAX_CAMERAS, FlameWatch
 
 log = logging.getLogger("cctv.pipeline")
 PERSON = 0  # COCO class id
@@ -55,6 +56,7 @@ class CameraWorker(threading.Thread):
         self.faces, self.notifier, self.maps = faces, notifier, maps    # FaceEngine / Notifier / FloorMaps, optional
         self.hazard = hazard                    # HazardWatch (fire and smoke), optional
         self._hazard_at: dict[str, float] = {}
+        self._flame: FlameWatch | None = None   # small flames: only on the cameras the owner picked
         self.id = cam["id"]
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -159,7 +161,21 @@ class CameraWorker(threading.Thread):
                 self._raw_boxes = []
         self._model.add_callback("on_predict_postprocess_end", keep_raw)   # added before the tracker's: runs first
 
+    def flame_chosen(self) -> bool:
+        hz = self.cfg.get("hazard") or {}
+        return bool(hz.get("enabled")) and self.id in list(hz.get("flame_cameras") or [])[:MAX_CAMERAS]
+
+    def _sync_flame(self) -> None:
+        if self.flame_chosen() and self._flame is None:
+            self._flame = FlameWatch(self, self.cfg)
+            log.info("camera %s: watching for small flames", self.id)
+        elif not self.flame_chosen() and self._flame is not None:
+            self._flame.stop()
+            self._flame = None
+
     def _want_stream(self) -> str:
+        if self.flame_chosen():
+            return "high"                       # a lighter's flame is a few pixels: needs the full picture
         return self.cfg["detector"].get("stream", "fast")
 
     def _decode_threads(self) -> int:
@@ -321,11 +337,16 @@ class CameraWorker(threading.Thread):
         is_file = self._is_file()
         skip = max(int(round(src_fps / det["process_fps"])), 1) if is_file else 1
         frame_i, t_prev = 0, time.time()
+        self._sync_flame()
         while not self.stop_event.is_set():
             ok, frame = cap.read()
             if not ok:
                 return
             frame_i += 1
+            if self._flame is not None:
+                self._flame.feed(frame, time.time())   # every picture of a demo video too
+            if frame_i % 50 == 0:
+                self._sync_flame()
             if is_file and frame_i % skip:
                 continue
             t0 = time.time()
@@ -355,6 +376,7 @@ class CameraWorker(threading.Thread):
             src = str(self.cam["source"])
             has_sub = src.startswith("rtsp") and sub_stream_url(src) is not None
             can_grab = hasattr(cap, "grab") and hasattr(cap, "retrieve")
+            self._sync_flame()
             while alive.is_set() and not self.stop_event.is_set():
                 if can_grab:
                     # every frame must be taken from the camera, but turning it into a picture costs processor
@@ -362,7 +384,8 @@ class CameraWorker(threading.Thread):
                     if not cap.grab():
                         break
                     now = time.time()
-                    if not (self._need_frame.is_set() or now - self.viewed_at < 3 or self._frame is None):
+                    if not (self._need_frame.is_set() or now - self.viewed_at < 3 or self._frame is None
+                            or self._flame is not None):
                         self.read_fps = 0.9 * self.read_fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
                         t_prev = now
                         continue
@@ -377,10 +400,14 @@ class CameraWorker(threading.Thread):
                 self._frame = (seq, frame)
                 self._frame_ready.set()
                 now = time.time()
+                if self._flame is not None:
+                    self._flame.feed(frame, now)       # every picture: a lighter burns for less than a second
                 self.read_fps = 0.9 * self.read_fps + 0.1 * (1.0 / max(now - t_prev, 1e-3))
                 t_prev = now
-                if seq % 50 == 0 and has_sub and self._want_stream() != self._opened_for:
-                    break               # the quality setting changed: reconnect with the other stream
+                if seq % 50 == 0:
+                    self._sync_flame()
+                    if has_sub and self._want_stream() != self._opened_for:
+                        break           # the quality setting changed: reconnect with the other stream
             alive.clear()
             self._frame_ready.set()
 
@@ -418,6 +445,9 @@ class CameraWorker(threading.Thread):
             self._need_frame.clear()
             t.join(timeout=5)
             self._frame = None
+            if self._flame is not None:
+                self._flame.stop()
+                self._flame = None
 
     def _moving(self, frame: np.ndarray):
         """Which parts of the picture changed lately (small mask), or None when that cannot be told:
@@ -657,6 +687,31 @@ class CameraWorker(threading.Thread):
             t = self.db.local(ts).strftime("%H:%M")
             icon = "🔥" if kind == "fire" else "💨"
             self.notifier.queue_alert(kind, f"{icon}🚨 {msg}\n{t}\nافتح الصورة وتأكد فوراً", jpg, self._meta(None))
+
+    def flame_alert(self, ts: float, frame: np.ndarray, box) -> None:
+        """A small flame (lighter, match) on a camera watched for them. The picture gets a close-up in its corner,
+        made from the picture as people see it (heads blurred when that is switched on)."""
+        shown = cv2.imdecode(np.frombuffer(self._render(frame, self._tracks, mark_only=True), np.uint8), cv2.IMREAD_COLOR)
+        fh, fw = shown.shape[:2]
+        k = fw / frame.shape[1]
+        x1, y1, x2, y2 = (int(v * k) for v in box)
+        cx, cy, r = (x1 + x2) // 2, (y1 + y2) // 2, max(30, 3 * max(x2 - x1, y2 - y1))
+        a, b, c, d = max(0, cx - r), max(0, cy - r), min(fw, cx + r), min(fh, cy + r)
+        cw = fw // 3
+        close = cv2.resize(shown[b:d, a:c], (cw, max(1, cw * (d - b) // max(c - a, 1))), interpolation=cv2.INTER_CUBIC)
+        thick = max(2, fw // 400)
+        cv2.rectangle(shown, (x1 - 6, y1 - 6), (x2 + 6, y2 + 6), (0, 0, 255), thick)
+        ch = min(close.shape[0], fh)
+        shown[0:ch, fw - cw:fw] = close[:ch]
+        cv2.rectangle(shown, (fw - cw, 0), (fw - 1, ch - 1), (0, 0, 255), thick)
+        ok, buf = cv2.imencode(".jpg", shown, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        jpg = buf.tobytes() if ok else b""
+        msg = f"خطر: لهب صغير (جداحة أو شخاط) في {self.cam['name']}"
+        self.db.add_alert(ts, self.id, "flame", msg, jpg if self.cfg["privacy"].get("save_alert_pictures", True) else None, None)
+        log.warning("ALERT %s flame: %s", self.id, msg)
+        if self.notifier:
+            t = self.db.local(ts).strftime("%H:%M:%S")
+            self.notifier.queue_alert("flame", f"🔥🚨 {msg}\n{t}\nالصورة المكبرة بالزاوية", jpg, self._meta(None))
 
     def _log_stats(self, ts: float) -> None:
         """Once a minute: what this camera is doing, so a problem on the owner's PC can be read from app.log."""

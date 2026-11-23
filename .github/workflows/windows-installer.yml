@@ -140,6 +140,17 @@ jobs:
           }
           Write-Host "fire check: $fire"
           if ($fire -notmatch "watching, engine openvino") { Get-Content "$dir\data\app.log" -Tail 40; Write-Error "fire and smoke watcher not working: '$fire'"; exit 1 }
+          # small flames: a chosen camera is checked picture by picture
+          Invoke-RestMethod http://localhost:8000/api/settings -Method Post -ContentType "application/json" -Body '{"hazard":{"flame_cameras":["demo"]}}' | Out-Null
+          $flame = ""
+          for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep 3
+            $diag = (Invoke-WebRequest http://localhost:8000/api/diagnostics -UseBasicParsing).Content
+            if ($diag -match "small flames on [^\n]*checked (\d+)") { $flame = $Matches[0]; if ([int]$Matches[1] -gt 20) { break } }
+          }
+          Write-Host "small flames: $flame"
+          if (-not ($flame -match "checked (\d+)" -and [int]$Matches[1] -gt 20)) { Get-Content "$dir\data\app.log" -Tail 40; Write-Error "small flame watch not working: '$flame'"; exit 1 }
+          Invoke-RestMethod http://localhost:8000/api/settings -Method Post -ContentType "application/json" -Body '{"hazard":{"flame_cameras":[]}}' | Out-Null
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode
