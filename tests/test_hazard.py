@@ -54,9 +54,13 @@ class Notes:
         self.sent.append((kind, text, jpeg, meta))
 
 
-def _frame(color):
+def _frame(color, flicker=True):
+    """A plain picture; with flicker the picture changes from look to look like real flames do."""
     f = np.zeros((480, 640, 3), np.uint8)
     f[:] = color
+    if flicker:
+        _frame.n = getattr(_frame, "n", 0) + 1
+        f[100:300, 100:300, 1] = 150 * (_frame.n % 2)              # the flames' brightness moves
     return f
 
 
@@ -84,7 +88,7 @@ def test_fire_needs_two_of_three_looks_then_alerts_with_picture(cfg):  # noqa: F
     assert _wait(lambda: hz.looks == 1)
     time.sleep(0.1)
     assert notes.sent == []                                     # one sighting is not enough
-    hz.offer(w, _frame((10, 10, 10)), time.time())
+    hz.offer(w, _frame((0, 0, 255)), time.time())
     assert _wait(lambda: hz.looks == 2)
     hz.offer(w, _frame((0, 0, 255)), time.time())
     assert _wait(lambda: len(notes.sent) == 1)
@@ -99,6 +103,16 @@ def test_fire_needs_two_of_three_looks_then_alerts_with_picture(cfg):  # noqa: F
     time.sleep(0.1)
     assert len(notes.sent) == 1
     assert hz.snapshot()["status"] == "watching"
+
+
+def test_fire_that_never_changes_is_a_picture_not_a_fire(cfg):  # noqa: F811
+    hz, w, notes = _setup(cfg)
+    still = _frame((0, 0, 255), flicker=False)
+    for i in range(4):
+        hz.offer(w, still.copy(), time.time())
+        assert _wait(lambda: hz.looks == i + 1)
+    time.sleep(0.1)
+    assert notes.sent == []
 
 
 def test_weak_smoke_and_switched_off_do_nothing(cfg):  # noqa: F811

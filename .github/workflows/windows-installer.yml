@@ -126,11 +126,20 @@ jobs:
           $eng = ""
           for ($i = 0; $i -lt 36; $i++) {
             $diag = (Invoke-WebRequest http://localhost:8000/api/diagnostics -UseBasicParsing).Content
-            if ($diag -match "engine (openvino|pytorch)") { $eng = $Matches[1]; break }
+            if ($diag -match "shared detector: [^\n]*engine (openvino|pytorch)") { $eng = $Matches[1]; break }
             Start-Sleep 5
           }
           $diag -split "`n" | Select-String "shared detector"
           if ($eng -ne "openvino") { Get-Content "$dir\data\app.log" -Tail 40; Write-Error "the fast detector engine was not used: '$eng'"; exit 1 }
+          # fire and smoke: its model comes with the program, loads without extra libraries and uses the fast engine
+          $fire = ""
+          for ($i = 0; $i -lt 36; $i++) {
+            $diag = (Invoke-WebRequest http://localhost:8000/api/diagnostics -UseBasicParsing).Content
+            if ($diag -match "fire and smoke: on True, (watching|not working), engine (\S+), [^\n]*") { $fire = $Matches[0]; if ($Matches[1] -eq "watching" -and $Matches[2] -ne "-") { break } }
+            Start-Sleep 5
+          }
+          Write-Host "fire check: $fire"
+          if ($fire -notmatch "watching, engine openvino") { Get-Content "$dir\data\app.log" -Tail 40; Write-Error "fire and smoke watcher not working: '$fire'"; exit 1 }
           Invoke-RestMethod http://localhost:8000/api/info | ConvertTo-Json -Compress
           Invoke-RestMethod http://localhost:8000/api/stats/summary | ConvertTo-Json -Depth 5 -Compress
           (Invoke-WebRequest http://localhost:8000/ -UseBasicParsing).StatusCode

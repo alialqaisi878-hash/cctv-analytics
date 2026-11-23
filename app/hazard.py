@@ -25,9 +25,10 @@ log = logging.getLogger("cctv.hazard")
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL = Path(__file__).resolve().parent / "models" / "fire" / "fire_smoke.pt"
-MODEL_SHA256 = "ac0a10257b2bc1f20c9d957f8adeeb61dd6140322fc19d0b4a116cb491776d16"
+MODEL_SHA256 = "0547e7e022668a205578ab27c1a0ba6c4342fd768b79f99b880693f8ecfe8495"
 NEED, OF = 2, 3          # seen in 2 of the last 3 looks at a camera before alerting
-WORDS = {"fire": "🔥 نار", "smoke": "💨 دخان"}
+SMALL_W, SMALL_H = 160, 120
+CHANGED = 3.0            # how much (0-255) the spot must have changed since the last look to count
 
 
 def _kind(name: str) -> str | None:
@@ -44,6 +45,7 @@ class HazardWatch:
         self._wake = threading.Event()
         self._looked: dict[str, float] = {}
         self._seen: dict[str, collections.deque] = {}
+        self._before: dict[str, np.ndarray] = {}      # each camera's previous look, small and grey
         self.status = "off"
         self.engine = ""
         self.last_error = ""
@@ -170,6 +172,23 @@ class HazardWatch:
         return out
 
     def _judge(self, worker, frame, ts: float, hits: list[tuple]) -> None:
+        # real flames flicker and smoke drifts: a sighting counts only where the picture changed since the last
+        # look. A poster, an orange wall or a lamp that the model likes stays the same and never alerts.
+        import cv2
+        small = cv2.cvtColor(cv2.resize(frame, (SMALL_W, SMALL_H), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+        before = self._before.get(worker.id)
+        self._before[worker.id] = small
+        fh, fw = frame.shape[:2]
+        live = []
+        for k, c, (x1, y1, x2, y2) in hits:
+            if before is None:
+                continue
+            a, b = int(x1 * SMALL_W / fw), int(y1 * SMALL_H / fh)
+            e, f = max(a + 1, int(x2 * SMALL_W / fw)), max(b + 1, int(y2 * SMALL_H / fh))
+            diff = cv2.absdiff(small[b:f, a:e], before[b:f, a:e])
+            if float(diff.mean()) >= CHANGED:
+                live.append((k, c, (x1, y1, x2, y2)))
+        hits = live
         seen = self._seen.setdefault(worker.id, collections.deque(maxlen=OF))
         seen.append({k for k, _, _ in hits})
         for kind in ("fire", "smoke"):
