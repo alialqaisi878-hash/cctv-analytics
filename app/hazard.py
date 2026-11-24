@@ -28,7 +28,16 @@ MODEL = Path(__file__).resolve().parent / "models" / "fire" / "fire_smoke.pt"
 MODEL_SHA256 = "0547e7e022668a205578ab27c1a0ba6c4342fd768b79f99b880693f8ecfe8495"
 NEED, OF = 2, 3          # seen in 2 of the last 3 looks at a camera before alerting
 SMALL_W, SMALL_H = 160, 120
-CHANGED = 3.0            # how much (0-255) the spot must have changed since the last look to count
+CHANGED = 3.0            # how much (0-255) more than the rest of the picture the spot must have changed since the last look
+GREY_SMOKE = 0.85        # black-and-white night pictures: plain walls look like smoke to the model, so be far surer
+
+
+def _is_grey(frame: np.ndarray) -> bool:
+    """A black-and-white picture (cameras switch to it at night, with infrared light)."""
+    import cv2
+    small = cv2.resize(frame, (64, 48), interpolation=cv2.INTER_AREA).astype(np.int16)
+    spread = np.abs(small[..., 0] - small[..., 1]) + np.abs(small[..., 1] - small[..., 2])
+    return float(np.percentile(spread, 90)) < 8       # a little colour (a lamp, the time stamp) is allowed
 
 
 def _kind(name: str) -> str | None:
@@ -45,7 +54,8 @@ class HazardWatch:
         self._wake = threading.Event()
         self._looked: dict[str, float] = {}
         self._seen: dict[str, collections.deque] = {}
-        self._before: dict[str, np.ndarray] = {}      # each camera's previous look, small and grey
+        self._before: dict[str, np.ndarray] = {}
+        self._people_before: dict[str, list] = {}      # each camera's previous look, small and grey
         self.status = "off"
         self.engine = ""
         self.last_error = ""
@@ -159,12 +169,15 @@ class HazardWatch:
         for frame, r in zip(frames, res):
             names = getattr(r, "names", None) or getattr(self._model, "names", {}) or {}
             fh, fw = frame.shape[:2]
+            grey = _is_grey(frame)
             hits = []
             b = r.boxes
             if b is not None and len(b):
                 for xyxy, c, k in zip(b.xyxy.cpu().numpy(), b.conf.cpu().numpy(), b.cls.cpu().numpy().astype(int)):
                     kind = _kind(names.get(int(k), ""))
                     if kind not in want or float(c) < sure[kind]:
+                        continue
+                    if kind == "smoke" and grey and float(c) < max(sure["smoke"], GREY_SMOKE):
                         continue
                     x1, y1, x2, y2 = (float(v) for v in xyxy)
                     if (x2 - x1) * (y2 - y1) < float(h.get("min_area", 0.0005)) * fw * fh:
@@ -182,14 +195,27 @@ class HazardWatch:
         self._before[worker.id] = small
         fh, fw = frame.shape[:2]
         live = []
-        for k, c, (x1, y1, x2, y2) in hits:
-            if before is None:
-                continue
-            a, b = int(x1 * SMALL_W / fw), int(y1 * SMALL_H / fh)
-            e, f = max(a + 1, int(x2 * SMALL_W / fw)), max(b + 1, int(y2 * SMALL_H / fh))
-            diff = cv2.absdiff(small[b:f, a:e], before[b:f, a:e])
-            if float(diff.mean()) >= CHANGED:
-                live.append((k, c, (x1, y1, x2, y2)))
+        # where people are now and were at the last look (someone walking leaves change behind too)
+        boxes_now = [tuple(b) for _, b, _ in list(getattr(worker, "_tracks", []) or [])]
+        people_then = self._people_before.get(worker.id, [])
+        self._people_before[worker.id] = boxes_now
+        if before is not None and hits:
+            diff = cv2.absdiff(small, before).astype(np.float32)
+            # night cameras brighten and darken the whole picture by themselves: only change beyond that counts
+            base = float(np.median(diff))
+            # people walking through a spot change it too: their boxes do not count as change
+            people = np.ones_like(diff, dtype=bool)
+            for px1, py1, px2, py2 in boxes_now + people_then:
+                people[max(0, int(py1 * SMALL_H / fh)):int(py2 * SMALL_H / fh) + 1,
+                       max(0, int(px1 * SMALL_W / fw)):int(px2 * SMALL_W / fw) + 1] = False
+            for k, c, (x1, y1, x2, y2) in hits:
+                a, b = int(x1 * SMALL_W / fw), int(y1 * SMALL_H / fh)
+                e, f = max(a + 1, int(x2 * SMALL_W / fw)), max(b + 1, int(y2 * SMALL_H / fh))
+                keep = people[b:f, a:e]
+                if not keep.any():
+                    continue
+                if float(diff[b:f, a:e][keep].mean()) - base >= CHANGED:
+                    live.append((k, c, (x1, y1, x2, y2)))
         hits = live
         seen = self._seen.setdefault(worker.id, collections.deque(maxlen=OF))
         seen.append({k for k, _, _ in hits})
