@@ -40,6 +40,10 @@ class FakeFireModel:
             if px == (0, 0, 255):
                 rows.append([100, 100, 300, 300, 0.8, 0])
                 rows.append([0, 0, 3, 3, 0.9, 0])          # a few pixels: ignored
+            if px == (200, 200, 200):
+                rows.append([50, 50, 400, 300, 0.67, 1])    # a white wall at night the model takes for smoke
+            if px == (0, 200, 255):
+                rows.append([50, 50, 400, 300, 0.7, 1])     # colour picture, sure enough
             if px == (128, 128, 128):
                 rows.append([50, 50, 400, 300, 0.4, 1])     # below the smoke threshold (0.5)
             out.append(_R(rows))
@@ -166,3 +170,31 @@ def test_settings_and_program_check(cfg):  # noqa: F811
     s = c.post("/api/settings", json={"hazard": {"enabled": False, "smoke_confidence": 0.6}}).json()
     assert s["hazard"]["enabled"] is False and s["hazard"]["smoke_confidence"] == 0.6
     assert "fire and smoke: on False" in c.get("/api/diagnostics").text
+
+
+def test_night_wall_is_not_smoke_and_lighting_changes_do_not_count(cfg):  # noqa: F811
+    """Ali's camera at night (black and white): a plain wall got "smoke 67%" (2026-11-24)."""
+    hz, w, notes = _setup(cfg)
+    for i in range(4):
+        f = np.full((480, 640, 3), 200, np.uint8)
+        f[1:, :, :] = 150 + 30 * (i % 2)            # the camera brightens and darkens the whole picture by itself
+        f[0, 0] = (200, 200, 200)
+        hz.offer(w, f, time.time())
+        assert _wait(lambda: hz.looks == i + 1)
+    time.sleep(0.1)
+    assert notes.sent == []
+
+
+def test_person_walking_through_is_not_smoke_moving(cfg):  # noqa: F811
+    hz, w, notes = _setup(cfg)
+    for i in range(4):
+        f = np.zeros((480, 640, 3), np.uint8)
+        f[:] = (30, 60, 90)
+        f[0, 0] = (0, 200, 255)
+        x = 100 + 60 * i
+        f[100:300, x:x + 50] = (250, 250, 250)      # someone walking across the spot
+        w._tracks = [(1, (x, 100, x + 50, 300), (x + 25, 300))]
+        hz.offer(w, f, time.time())
+        assert _wait(lambda: hz.looks == i + 1)
+    time.sleep(0.1)
+    assert notes.sent == []
