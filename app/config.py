@@ -57,6 +57,8 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_minutes": 5,      # the same camera alerts again for the same thing after this long
         "imgsz": 640,
         "model": "",                # "" = the model that comes with the program
+        "flame_cameras": [],        # up to 4 camera ids watched picture by picture for small flames (lighters)
+        "flame_cooldown_minutes": 2,
     },
     "notify": {                     # send alerts with their picture to WhatsApp / Telegram (see app/notify.py)
         "provider": "",             # "" | greenapi | ultramsg | telegram | webhook (n8n...)
@@ -250,6 +252,17 @@ def _days(v) -> list[int]:
     return out
 
 
+def _camera_ids(v) -> list[str]:
+    out = []
+    for x in v or []:
+        x = str(x).strip()[:60]
+        if x and x not in out:
+            out.append(x)
+    if len(out) > 4:
+        raise ValueError("4 cameras at most")
+    return out
+
+
 def _text(n: int):
     return lambda v: str(v).strip()[:n]
 
@@ -284,7 +297,7 @@ EDITABLE = {
               "openai_model": _text(60)},
     "hazard": {"enabled": bool, "fire": bool, "smoke": bool, "every_s": _int(2, 60),
                "fire_confidence": _float(0.2, 0.9), "smoke_confidence": _float(0.2, 0.9),
-               "cooldown_minutes": _int(1, 120)},
+               "cooldown_minutes": _int(1, 120), "flame_cameras": _camera_ids, "flame_cooldown_minutes": _int(1, 60)},
     "faces": {"enabled": bool, "threshold": _float(0.25, 0.8), "present_minutes": _int(1, 720)},
     "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
                "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},

@@ -288,18 +288,22 @@ def stop_program(port: int, forget: bool) -> int:
     if forget:
         from app.autostart import set_start_with_windows
         set_start_with_windows(ROOT, False)
-    if not _port_in_use(port):
-        return 0
-    try:
-        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/window/quit", method="POST"),
-                               timeout=10).read()
-    except Exception:  # noqa: BLE001
-        pass
-    for _ in range(60):
+    # right after a start the program can be busy loading its models for a while and not answer at once:
+    # keep asking until it has stopped (about a minute and a half at most)
+    end = time.time() + 90
+    asked_at = 0.0
+    while time.time() < end:
         if not _port_in_use(port):
             return 0
+        if time.time() - asked_at >= 10:
+            asked_at = time.time()
+            try:
+                urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/window/quit", method="POST"),
+                                       timeout=10).read()
+            except Exception:  # noqa: BLE001
+                pass
         time.sleep(0.5)
-    return 1
+    return 0 if not _port_in_use(port) else 1
 
 
 def seed_demo(cfg: dict, days: int = 7) -> None:

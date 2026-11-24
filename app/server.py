@@ -562,6 +562,11 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
         hz = core.hazard.snapshot()
         lines.append(f"fire and smoke: on {hz['enabled']}, {hz['status']}, engine {hz['engine'] or '-'}, "
                      f"{hz['rate']} pictures/s, looked {hz['looks']} times" + (f", last error: {hz['error']}" if hz["error"] else ""))
+        for w in list(core.workers.values()):
+            fl = getattr(w, "_flame", None)
+            if fl is not None:
+                lines.append(f"small flames on {w.cam['name']} [{w.id}]: checking {fl.rate:.1f} pictures/s, checked {fl.checked}, "
+                             f"skipped {fl.dropped}, last spot {fl.last_spot or '-'}")
         lines += ["", f"cameras ({len(cfg['cameras'])}):"]
         for cam in list(cfg["cameras"]):
             w = core.workers.get(cam["id"])
