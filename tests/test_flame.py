@@ -62,7 +62,7 @@ def test_lamps_leds_screens_and_lights_do_not_alert(cfg):  # noqa: F811
         assert _watch(cfg, draw) == []
 
 
-def test_only_chosen_cameras_use_the_full_picture_and_alert_with_a_close_up(cfg):  # noqa: F811
+def test_chosen_cameras_are_watched_and_alert_with_a_close_up(cfg):  # noqa: F811
     from app.db import Database
     from app.pipeline import CameraWorker
 
@@ -77,7 +77,10 @@ def test_only_chosen_cameras_use_the_full_picture_and_alert_with_a_close_up(cfg)
     cfg["detector"]["stream"] = "fast"
     assert not w.flame_chosen() and w._want_stream() == "fast"
     cfg["hazard"]["flame_cameras"] = [cam["id"]]
-    assert w.flame_chosen() and w._want_stream() == "high"
+    assert w.flame_chosen() and w._want_stream() == "fast"          # light: the camera's second stream, every picture
+    cfg["hazard"]["flame_full_picture"] = True
+    assert w._want_stream() == "high"
+    cfg["hazard"]["flame_full_picture"] = False
     w._sync_flame()
     assert w._flame is not None
     f = _scene(0)
@@ -98,3 +101,28 @@ def test_at_most_four_cameras(cfg):  # noqa: F811
     ok = c.post("/api/settings", json={"hazard": {"flame_cameras": ["a", "b"]}}).json()
     assert ok["hazard"]["flame_cameras"] == ["a", "b"]
     assert c.post("/api/settings", json={"hazard": {"flame_cameras": list("abcde")}}).status_code == 400
+
+
+def test_camera_clock_is_not_a_flame(cfg):  # noqa: F811
+    """The camera's own clock: white digits that change every second, shimmering with the compression, and the
+    picture getting lighter and darker (2026-11-26: "small flame" on the clock of a daylight camera)."""
+    from app.flame import FlameWatch
+    cfg["hazard"]["flame_cooldown_minutes"] = 0
+    w = Catch()
+    fw = FlameWatch(w, cfg)
+    fw.stop()
+    rng = np.random.default_rng(5)
+    fps = 10
+    for i in range(fps * 60):
+        t = i / fps
+        f = np.full((360, 640, 3), 215, np.uint8)
+        if int(t) % 23 < 9:
+            f -= 45                                           # the camera's exposure jumps
+        org = (320 + int(rng.integers(-1, 2)), 29 + int(rng.integers(-1, 2)))
+        txt = f"2026-11-26 14:{52 + int(t) // 60:02d}:{int(t) % 60:02d}"
+        cv2.putText(f, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 4, cv2.LINE_AA)
+        cv2.putText(f, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+        f = np.clip(f.astype(int) + rng.integers(-3, 4, f.shape), 0, 255).astype(np.uint8)
+        q = int(rng.integers(35, 80))
+        fw.check(cv2.imdecode(cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, q])[1], 1), 1000 + t)
+    assert w.alerts == []

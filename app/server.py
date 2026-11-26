@@ -21,7 +21,9 @@ from . import autostart, discovery
 from .agent import Analyst
 from .analytics import LineCounter
 from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
-                     notice_text, public_settings, remove_local_camera, set_camera_lines)
+                     notice_text, public_settings, remove_local_camera, set_camera_lines, clean_camera_name,
+                     set_camera_name)
+from .camera_api import CameraAbilities
 from .db import Database
 from .detector import SharedDetector
 from .hazard import HazardWatch
@@ -49,6 +51,7 @@ class App:
         self.workers: dict[str, CameraWorker] = {}
         self.detector: SharedDetector | None = None    # one model for all cameras, started with the first camera
         self.hazard = HazardWatch(cfg)                  # fire and smoke (its model loads only when switched on)
+        self.abilities = CameraAbilities()             # what each Dahua camera can do by itself (read once)
         if start_cameras:
             for cam in cfg["cameras"]:
                 if cam["enabled"]:
@@ -65,6 +68,7 @@ class App:
         w = CameraWorker(cam, self.cfg, self.db, self.faces, self.notifier, self.maps, self.detector, self.hazard)
         self.workers[cam["id"]] = w
         w.start()
+        self.abilities.check(cam["id"], str(cam.get("source", "")))   # what the camera can do by itself
         return w
 
     def _housekeeping(self):
@@ -187,6 +191,26 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             core.start_worker(cam)
         log.info("camera %s added (%s)", cam_id, found["vendor"])
         return {"id": cam_id, "name": name, "vendor": found["vendor"]}
+
+    @api.put("/api/cameras/{cam_id}/name")
+    def rename_camera(cam_id: str, payload: dict = Body(...)):
+        name = clean_camera_name(payload.get("name"))
+        if not name:
+            raise HTTPException(400, "اكتب اسم للكاميرا.")
+        with cam_lock:
+            cam = next((c for c in cfg["cameras"] if c["id"] == cam_id), None)
+            if cam is None:
+                raise HTTPException(404, "الكاميرا غير موجودة.")
+            if any(c["name"] == name and c["id"] != cam_id for c in cfg["cameras"]):
+                raise HTTPException(409, "اكو كاميرا ثانية بنفس الاسم. اختار اسم مختلف.")
+            set_camera_name(cfg.get("_names_file") or Path(cfg["_cameras_file"]).with_name("camera_names.yaml"),
+                            cam_id, name)
+            cam["name"] = name                  # the camera's worker shares this dict: alerts use the new name at once
+            w = core.workers.get(cam_id)
+            if w is not None and w.cam is not cam:
+                w.cam["name"] = name
+        log.info("camera %s renamed to %s", cam_id, name)
+        return {"id": cam_id, "name": name}
 
     @api.delete("/api/cameras/{cam_id}")
     def delete_camera(cam_id: str):
@@ -559,6 +583,10 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             d = core.detector.snapshot()
             lines.append(f"shared detector: {d['status']}, engine {d['engine'] or '-'}, {d['rate']} pictures/s for all cameras, busy {int(d['busy'] * 100)}%, "
                          f"{d['batch']} at a time ({d['batch_s']} s each), waiting {d['waiting']}" + (f", last error: {d['error']}" if d["error"] else ""))
+        t_cpu, t_wall = time.process_time(), time.time()
+        time.sleep(1.0)
+        cpu = (time.process_time() - t_cpu) / max(time.time() - t_wall, 1e-3) / max(os.cpu_count() or 1, 1)
+        lines.append(f"processor used by the program: {int(cpu * 100)}% of {os.cpu_count()} cores")
         hz = core.hazard.snapshot()
         lines.append(f"fire and smoke: on {hz['enabled']}, {hz['status']}, engine {hz['engine'] or '-'}, "
                      f"{hz['rate']} pictures/s, looked {hz['looks']} times" + (f", last error: {hz['error']}" if hz["error"] else ""))
@@ -578,6 +606,9 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
                          f"reading {sn['read_fps']}/s, analysing {sn['fps']}/s, last analysis {sn['analysed_ago']} s ago, "
                          f"people {sn['people_now']}, detector's best guess {sn['best_conf']}, errors {w.errors}"
                          + (f", last error: {sn['error']}" if sn["error"] else ""))
+            own = core.abilities.describe(cam["id"])
+            if own:
+                lines.append(f"    {own}")
         lines += ["", "log (latest lines):"]
         log_path = Path(cfg["database"]).parent / "app.log"
         try:

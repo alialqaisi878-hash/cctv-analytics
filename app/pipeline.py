@@ -174,8 +174,8 @@ class CameraWorker(threading.Thread):
             self._flame = None
 
     def _want_stream(self) -> str:
-        if self.flame_chosen():
-            return "high"                       # a lighter's flame is a few pixels: needs the full picture
+        if self.flame_chosen() and self.cfg["hazard"].get("flame_full_picture"):
+            return "high"                       # finer for tiny flames, but decoding it every picture is heavy
         return self.cfg["detector"].get("stream", "fast")
 
     def _decode_threads(self) -> int:

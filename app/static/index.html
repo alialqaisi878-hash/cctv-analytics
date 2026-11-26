@@ -306,7 +306,8 @@
           <div class="field"><label for="h-every">كل كم ثانية يفحص كل كاميرا<small>أقل = أسرع بالكشف بس ضغط أكثر على الحاسبة. المقترح 5</small></label><input type="number" id="h-every" min="2" max="60"></div>
           <div class="field"><label for="h-fconf">حساسية النار<small>أعلى = تنبيهات كاذبة أقل. المقترح 0.45</small></label><input type="number" id="h-fconf" min="0.2" max="0.9" step="0.05"></div>
           <div class="field"><label for="h-sconf">حساسية الدخان<small>المقترح 0.5</small></label><input type="number" id="h-sconf" min="0.2" max="0.9" step="0.05"></div>
-          <div class="field" style="display:block"><label>مراقبة اللهب الصغير (جداحة، شخاط) <small>اختار لحد 4 كاميرات مهمة، مثل المخزن أو مكان ممنوع بيه التدخين. هاي الكاميرات تنفحص كل صورة بالجودة العالية، فتاخذ من الحاسبة أكثر.</small></label><div class="days" id="h-flame" style="margin-top:8px"></div><small id="h-flame-state"></small></div>
+          <div class="field" style="display:block"><label>مراقبة اللهب الصغير (جداحة، شخاط) <small>اختار لحد 4 كاميرات مهمة، مثل المخزن أو مكان ممنوع بيه التدخين. هاي الكاميرات تنفحص كل صورة، فتاخذ من الحاسبة أكثر.</small></label><div class="days" id="h-flame" style="margin-top:8px"></div><small id="h-flame-state"></small>
+            <label style="margin-top:8px"><input type="checkbox" id="h-flfull"> افحصها بالجودة العالية <small>أدق للهب الصغير جداً، بس أثقل بكثير على الحاسبة</small></label></div>
         </div>
         <div class="card"><h2>الأداء</h2>
           <div class="field"><label for="s-stream">جودة بث الكاميرات<small>"سريع" يستخدم البث الثاني الخفيف للكاميرا: صورة سلسة وضغط أقل بكثير على الحاسبة</small></label><select id="s-stream"><option value="fast">سريع (ينصح به)</option><option value="high">جودة عالية (أبطأ)</option></select></div>
@@ -500,7 +501,7 @@ function camCard(c, manage) {
   return `<div class="cam"><div class="pic" data-view-cam="${esc(c.id)}" title="اضغط للتكبير"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
     <div class="info"><div class="row"><span class="name">${esc(c.name)}</span><span data-pill="${esc(c.id)}"></span></div>
     <div class="row"><span class="counts" data-counts="${esc(c.id)}"></span><span class="st" data-st="${esc(c.id)}"></span></div>
-    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
+    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-rename="${esc(c.id)}">تغيير الاسم</button><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
     </div></div>`;
 }
 
@@ -549,6 +550,7 @@ async function loadCams() {
     document.querySelectorAll("[data-goto-add]").forEach(b => b.onclick = () => { show("cameras"); $("discover").click(); });
     document.querySelectorAll("[data-line]").forEach(b => b.onclick = () => openLine(b.dataset.line));
     document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => delCam(b.dataset.del, b.dataset.name));
+    document.querySelectorAll("[data-rename]").forEach(b => b.onclick = () => renameCam(b.dataset.rename));
   }
   let now = 0;
   for (const c of cams) {
@@ -564,6 +566,15 @@ async function loadCams() {
   $("k-now").textContent = now;
 }
 
+async function renameCam(id) {
+  const old = camName(id);
+  const name = (prompt("الاسم الجديد للكاميرا (يطلع بالشاشة وبرسائل الواتساب):", old) || "").trim();
+  if (!name || name === old) return;
+  try {
+    await j(`/api/cameras/${encodeURIComponent(id)}/name`, {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name})});
+    toast("تغيّر الاسم"); camSig = ""; loadCams();
+  } catch (e) { toast(e.message); }
+}
 async function delCam(id, name) {
   if (!confirm(`حذف الكاميرا "${name}"؟ الإحصائيات القديمة تبقى محفوظة.`)) return;
   try { await j(`/api/cameras/${encodeURIComponent(id)}`, {method:"DELETE"}); toast("انحذفت الكاميرا"); loadCams(); }
@@ -939,6 +950,7 @@ async function loadSettings() {
   const chosen = new Set(hz.flame_cameras || []);
   $("h-flame").innerHTML = (lastCams || []).map(c => `<label><input type="checkbox" value="${esc(c.id)}"${chosen.has(c.id) ? " checked" : ""}> ${esc(c.name)}</label>`).join("") || "<small>ماكو كاميرات بعد</small>";
   $("h-flame").onchange = () => { const n = document.querySelectorAll("#h-flame input:checked").length; $("h-flame-state").textContent = n > 4 ? "اختار 4 كاميرات بالأكثر" : ""; };
+  $("h-flfull").checked = !!hz.flame_full_picture;
   $("h-every").value = hz.every_s || 5; $("h-fconf").value = hz.fire_confidence || 0.45; $("h-sconf").value = hz.smoke_confidence || 0.5;
   $("s-auto").checked = s.updates.auto_install; $("s-boot").checked = s.startup.with_windows; $("s-awake").checked = s.startup.keep_awake; $("set-state").textContent = "";
 }
@@ -958,7 +970,8 @@ $("save").onclick = async () => {
     startup: {with_windows: $("s-boot").checked, keep_awake: $("s-awake").checked},
     hazard: {enabled: $("h-on").checked, fire: $("h-fire").checked, smoke: $("h-smoke").checked, every_s: $("h-every").value,
              fire_confidence: $("h-fconf").value, smoke_confidence: $("h-sconf").value,
-             flame_cameras: [...document.querySelectorAll("#h-flame input:checked")].map(i => i.value).slice(0, 4)},
+             flame_cameras: [...document.querySelectorAll("#h-flame input:checked")].map(i => i.value).slice(0, 4),
+             flame_full_picture: $("h-flfull").checked},
   };
   if ($("s-key").value.trim()) body.agent.api_key = $("s-key").value.trim();
   if ($("s-pass").value) body.server.password = $("s-pass").value;
