@@ -22,7 +22,7 @@ from .agent import Analyst
 from .analytics import LineCounter
 from .config import (add_local_camera, apply_settings, in_working_hours, local_camera_ids, normalize_camera,
                      notice_text, public_settings, remove_local_camera, set_camera_lines, clean_camera_name,
-                     set_camera_name)
+                     set_camera_name, set_camera_confidence, CAM_CONFIDENCE)
 from .camera_api import CameraAbilities
 from .db import Database
 from .detector import SharedDetector
@@ -154,6 +154,7 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
             w = core.workers.get(cam["id"])
             snap = w.snapshot() if w else {"id": cam["id"], "name": cam["name"], "status": "disabled"}
             snap["removable"] = cam["id"] in removable
+            snap["confidence"] = cam.get("confidence")          # this camera's own sensitivity (None = general)
             out.append(snap)
         return out
 
@@ -211,6 +212,38 @@ def create_app(cfg: dict, start_cameras: bool = True) -> FastAPI:
                 w.cam["name"] = name
         log.info("camera %s renamed to %s", cam_id, name)
         return {"id": cam_id, "name": name}
+
+    @api.put("/api/cameras/{cam_id}/confidence")
+    def camera_confidence(cam_id: str, payload: dict = Body(...)):
+        """This camera's own detector sensitivity; null goes back to the general setting."""
+        raw = payload.get("confidence")
+        conf = None
+        if raw not in (None, ""):
+            try:
+                conf = float(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "اكتب رقم مثل 0.3")
+            lo, hi = CAM_CONFIDENCE
+            if not lo <= conf <= hi:
+                raise HTTPException(400, f"الحساسية لازم تكون بين {lo} و {hi}.")
+        with cam_lock:
+            cam = next((c for c in cfg["cameras"] if c["id"] == cam_id), None)
+            if cam is None:
+                raise HTTPException(404, "الكاميرا غير موجودة.")
+            set_camera_confidence(cfg.get("_tuning_file") or Path(cfg["_cameras_file"]).with_name("camera_tuning.yaml"),
+                                  cam_id, conf)
+            if conf is None:
+                cam.pop("confidence", None)
+            else:
+                cam["confidence"] = conf
+            w = core.workers.get(cam_id)
+            if w is not None and w.cam is not cam:
+                if conf is None:
+                    w.cam.pop("confidence", None)
+                else:
+                    w.cam["confidence"] = conf
+        log.info("camera %s confidence %s", cam_id, conf)
+        return {"id": cam_id, "confidence": conf, "general": cfg["detector"]["confidence"]}
 
     @api.delete("/api/cameras/{cam_id}")
     def delete_camera(cam_id: str):

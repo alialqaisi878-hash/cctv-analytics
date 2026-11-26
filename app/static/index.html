@@ -501,7 +501,7 @@ function camCard(c, manage) {
   return `<div class="cam"><div class="pic" data-view-cam="${esc(c.id)}" title="اضغط للتكبير"><img data-cam="${esc(c.id)}" alt="${esc(c.name)}" hidden><span data-wait="${esc(c.id)}">بانتظار الصورة...</span></div>
     <div class="info"><div class="row"><span class="name">${esc(c.name)}</span><span data-pill="${esc(c.id)}"></span></div>
     <div class="row"><span class="counts" data-counts="${esc(c.id)}"></span><span class="st" data-st="${esc(c.id)}"></span></div>
-    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-rename="${esc(c.id)}">تغيير الاسم</button><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
+    ${manage ? `<div class="row" style="justify-content:flex-start"><button class="btn ghost small" data-rename="${esc(c.id)}">تغيير الاسم</button><button class="btn ghost small" data-sens="${esc(c.id)}">الحساسية${c.confidence ? ` (${c.confidence})` : ""}</button><button class="btn ghost small" data-line="${esc(c.id)}">خط العد</button><a class="btn ghost small" href="/api/cameras/${encodeURIComponent(c.id)}/snapshot.jpg">حفظ صورة</a><button class="btn danger small" data-del="${esc(c.id)}" data-name="${esc(c.name)}">حذف</button></div>` : ""}
     </div></div>`;
 }
 
@@ -540,7 +540,7 @@ $("diag-copy").onclick = async () => {
 let lastCams = [];
 async function loadCams() {
   const cams = await j("/api/cameras"); lastCams = cams;
-  const sig = cams.map(c => c.id + c.name).join("|");
+  const sig = cams.map(c => c.id + c.name + (c.confidence || "")).join("|");
   if (sig !== camSig) {
     camSig = sig;
     const none = (msg) => `<div class="empty" style="grid-column:1/-1"><b>ماكو كاميرات مضافة بعد</b><span>${msg}</span><button class="btn" data-goto-add>إضافة كاميرا</button></div>`;
@@ -551,6 +551,7 @@ async function loadCams() {
     document.querySelectorAll("[data-line]").forEach(b => b.onclick = () => openLine(b.dataset.line));
     document.querySelectorAll("[data-del]").forEach(b => b.onclick = () => delCam(b.dataset.del, b.dataset.name));
     document.querySelectorAll("[data-rename]").forEach(b => b.onclick = () => renameCam(b.dataset.rename));
+    document.querySelectorAll("[data-sens]").forEach(b => b.onclick = () => camSensitivity(b.dataset.sens));
   }
   let now = 0;
   for (const c of cams) {
@@ -573,6 +574,16 @@ async function renameCam(id) {
   try {
     await j(`/api/cameras/${encodeURIComponent(id)}/name`, {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({name})});
     toast("تغيّر الاسم"); camSig = ""; loadCams();
+  } catch (e) { toast(e.message); }
+}
+async function camSensitivity(id) {
+  const c = lastCams.find(x => x.id === id) || {};
+  const general = $("s-conf") ? $("s-conf").value : "";
+  const v = prompt(`ثقة الكاشف المطلوبة لهاي الكاميرا (من 0.2 إلى 0.9).\nأقل = يحسب الشخص البعيد أو القاعد أو المغطى، بس ممكن يحسب أغراض كأشخاص.\nالمقترح للكاميرا اللي تفوّت ناس: 0.3\nاتركه فارغ حتى ترجع للإعداد العام${general ? ` (${general})` : ""}.`, c.confidence ?? "");
+  if (v === null) return;
+  try {
+    await j(`/api/cameras/${encodeURIComponent(id)}/confidence`, {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify({confidence: v.trim() === "" ? null : v.trim()})});
+    toast(v.trim() === "" ? "رجعت للإعداد العام" : "انحفظت الحساسية"); camSig = ""; loadCams();
   } catch (e) { toast(e.message); }
 }
 async function delCam(id, name) {

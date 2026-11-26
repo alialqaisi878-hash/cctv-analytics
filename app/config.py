@@ -127,6 +127,13 @@ def load_config(path: str | Path) -> dict:
     for cam in cfg["cameras"]:
         if given.get(cam.get("id")):
             cam["name"] = given[cam["id"]]
+    # per-camera detector sensitivity set in the program (a far, half-hidden or seated person scores low)
+    cfg["_tuning_file"] = str(path.parent / "data" / "camera_tuning.yaml")
+    tuning = read_camera_tuning(cfg["_tuning_file"])
+    for cam in cfg["cameras"]:
+        conf = (tuning.get(cam.get("id")) or {}).get("confidence")
+        if conf is not None:
+            cam["confidence"] = conf
     seen = set()
     for cam in cfg["cameras"]:
         if "id" not in cam or "source" not in cam:
@@ -283,7 +290,7 @@ def _choice(*options):
     return check
 
 
-ALERT_KINDS = ("after_hours", "crowding", "offline", "person", "unknown")
+ALERT_KINDS = ("after_hours", "crowding", "offline", "person", "unknown", "fire", "smoke", "flame")
 
 
 def _kinds(v) -> list[str]:
@@ -404,6 +411,37 @@ def set_camera_name(file: str | Path, cam_id: str, name: str) -> None:
     names[cam_id] = name
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(yaml.safe_dump(names, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+CAM_CONFIDENCE = (0.2, 0.9)
+
+
+def read_camera_tuning(file: str | Path) -> dict[str, dict]:
+    file = Path(file)
+    if not file.exists():
+        return {}
+    try:
+        data = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    out = {}
+    for k, v in (data.items() if isinstance(data, dict) else []):
+        if isinstance(v, dict) and isinstance(v.get("confidence"), (int, float)):
+            lo, hi = CAM_CONFIDENCE
+            out[str(k)] = {"confidence": min(max(float(v["confidence"]), lo), hi)}
+    return out
+
+
+def set_camera_confidence(file: str | Path, cam_id: str, confidence: float | None) -> None:
+    """None = back to the general setting."""
+    file = Path(file)
+    tuning = read_camera_tuning(file)
+    if confidence is None:
+        tuning.pop(cam_id, None)
+    else:
+        tuning[cam_id] = {"confidence": round(float(confidence), 2)}
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(yaml.safe_dump(tuning, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def set_camera_lines(file: str | Path, cam_id: str, lines: list[dict]) -> bool:

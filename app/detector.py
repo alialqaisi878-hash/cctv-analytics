@@ -250,8 +250,10 @@ class SharedDetector:
 
     def _infer(self, frames) -> list[list]:
         det = self.cfg["detector"]
-        sure = det["confidence"]
-        low = min(sure, max(0.2, sure * 0.5))   # weaker guesses too: the cameras decide which of them are people
+        # weaker guesses too (also for a camera set to be more sensitive): each camera decides which are people
+        sure = min([float(det["confidence"])] + [float(c["confidence"]) for c in self.cfg.get("cameras", [])
+                                                 if c.get("confidence")])
+        low = min(sure, max(0.2, sure * 0.5))
         with engine_guard(self._model):
             res = self._model.predict(frames, classes=[PERSON], conf=low, imgsz=det["imgsz"], device=det.get("device"),
                                   verbose=False)

@@ -174,3 +174,34 @@ def test_dahua_camera_abilities_are_read_and_a_refused_login_stops_at_once():
     assert a["status"].startswith("login refused") and len(asked) == 1
     assert camera_api.login_of("rtsp://ad%40m:p%3Aw@10.0.0.5:554/cam/realmonitor?channel=1&subtype=0") == ("10.0.0.5", "ad@m", "p:w")
     assert camera_api.login_of("rtsp://10.0.0.6/Streaming/Channels/101") is None
+
+
+def test_settings_page_saves_with_every_alert_kind_it_shows(cfg_path):
+    """2026-11-26: saving the settings failed with "notify.kinds" once fire/smoke/flame boxes were ticked."""
+    import re
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    cfg = config.load_config(cfg_path)
+    cfg["database"] = str(Path(cfg["_cameras_file"]).parent / "t.db")
+    shown = re.search(r"const KIND = \{(.*?)\};", (Path("app/static/index.html")).read_text(encoding="utf-8")).group(1)
+    kinds = re.findall(r"(\w+):\"", shown)
+    assert {"fire", "smoke", "flame", "after_hours"} <= set(kinds)
+    c = TestClient(create_app(cfg, start_cameras=False))
+    r = c.post("/api/settings", json={"notify": {"kinds": kinds}})
+    assert r.status_code == 200, r.text
+    assert r.json()["notify"]["kinds"] == kinds
+
+
+def test_each_camera_can_have_its_own_sensitivity(cfg_path):
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    cfg = config.load_config(cfg_path)
+    cfg["database"] = str(Path(cfg["_cameras_file"]).parent / "t.db")
+    c = TestClient(create_app(cfg, start_cameras=False))
+    assert c.put("/api/cameras/door/confidence", json={"confidence": 0.3}).json()["confidence"] == 0.3
+    assert c.put("/api/cameras/door/confidence", json={"confidence": 0.05}).status_code == 400
+    assert c.put("/api/cameras/door/confidence", json={"confidence": "x"}).status_code == 400
+    assert [x.get("confidence") for x in c.get("/api/cameras").json() if x["id"] == "door"] == [0.3]
+    assert [x.get("confidence") for x in config.load_config(cfg_path)["cameras"]] == [0.3]
+    assert c.put("/api/cameras/door/confidence", json={"confidence": None}).json()["confidence"] is None
+    assert [x.get("confidence") for x in config.load_config(cfg_path)["cameras"]] == [None]
