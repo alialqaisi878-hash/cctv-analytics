@@ -133,7 +133,6 @@
       <button data-view="cameras"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l12-3 2 7-12 3z"/><path d="M17 8l4 1-1 4-3-1"/><path d="M7 14v5h5"/></svg><span>الكاميرات</span></button>
       <button data-view="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg><span>التنبيهات</span><b class="badge" id="badge" hidden></b></button>
       <button data-view="people"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0112 0v1"/><path d="M16 4a4 4 0 010 8M22 21v-1a6 6 0 00-4-5.6"/></svg><span>الأشخاص</span></button>
-      <button data-view="map"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg><span>الخريطة</span></button>
       <button data-view="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h7M9 17h7"/></svg><span>التقارير</span></button>
       <button data-view="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>الإعدادات</span></button>
     </nav>
@@ -296,7 +295,7 @@
           <div class="field"><label for="n-url" id="n-url-l">عنوان الخدمة<small>اتركه فارغ إلا إذا الخدمة عطتك عنوان خاص</small></label><input type="text" id="n-url" class="ltr" placeholder="https://..."></div>
           <div class="field"><label for="n-img">إرسال صورة التنبيه</label><input type="checkbox" id="n-img"></div>
           <div class="field" id="n-loc-f"><label for="n-loc">دز تحركات الموظفين للفلو<small>كل ما موظف مسجّل ينشاف بكاميرا ثانية، أو يرجع بعد غياب، يوصل للـ ERP مكانه</small></label><input type="checkbox" id="n-loc"></div>
-          <div class="field" style="display:block"><label>أنواع التنبيهات المرسلة <small>إذا ما اخترت شي ترسل كلها</small></label><div class="days" id="n-kinds" style="margin-top:8px"></div></div>
+          <div class="field" style="display:block"><label>أنواع التنبيهات المرسلة <small>إذا ما اخترت شي ترسل كلها. النار والدخان واللهب الصغير ترسل دائماً</small></label><div class="days" id="n-kinds" style="margin-top:8px"></div></div>
           <div class="field"><label>جرّب الإرسال بعد الحفظ<small id="n-state"></small></label><button class="btn ghost small" id="n-test">أرسل رسالة تجربة</button></div>
         </div>
         <div class="card"><h2>🔥 كشف النار والدخان</h2>
@@ -1000,7 +999,8 @@ $("quit-btn").onclick = async () => {
     $("quit-state").textContent = "البرنامج وگف. تگدر تسد النافذة.";
   } catch (e) { $("quit-state").textContent = e.message; }
 };
-$("n-kinds").innerHTML = Object.entries(KIND).map(([k, v]) => `<label><input type="checkbox" value="${k}">${v}</label>`).join("");
+// fire, smoke and small flames are always sent (danger): they are not offered as a choice
+$("n-kinds").innerHTML = Object.entries(KIND).filter(([k]) => !["fire", "smoke", "flame"].includes(k)).map(([k, v]) => `<label><input type="checkbox" value="${k}">${v}</label>`).join("");
 function notifyForm() {
   const p = $("n-prov").value;
   $("n-inst-f").hidden = p === "telegram" || !p;
