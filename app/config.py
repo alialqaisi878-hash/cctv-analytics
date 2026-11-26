@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_minutes": 5,      # the same camera alerts again for the same thing after this long
         "imgsz": 640,
         "model": "",                # "" = the model that comes with the program
+        "flame_full_picture": False,  # small flames on the camera's full picture: finer, but much heavier
         "flame_cameras": [],        # up to 4 camera ids watched picture by picture for small flames (lighters)
         "flame_cooldown_minutes": 2,
     },
@@ -120,6 +121,12 @@ def load_config(path: str | Path) -> dict:
     # cameras added from the dashboard live in their own file, so config.yaml keeps its comments
     cfg["_cameras_file"] = str(path.parent / "data" / "cameras.yaml")
     cfg["cameras"] = list(cfg["cameras"]) + _read_local_cameras(cfg["_cameras_file"])
+    # names the owner gave the cameras in the program (any camera, also those in config.yaml)
+    cfg["_names_file"] = str(path.parent / "data" / "camera_names.yaml")
+    given = read_camera_names(cfg["_names_file"])
+    for cam in cfg["cameras"]:
+        if given.get(cam.get("id")):
+            cam["name"] = given[cam["id"]]
     seen = set()
     for cam in cfg["cameras"]:
         if "id" not in cam or "source" not in cam:
@@ -297,7 +304,8 @@ EDITABLE = {
               "openai_model": _text(60)},
     "hazard": {"enabled": bool, "fire": bool, "smoke": bool, "every_s": _int(2, 60),
                "fire_confidence": _float(0.2, 0.9), "smoke_confidence": _float(0.2, 0.9),
-               "cooldown_minutes": _int(1, 120), "flame_cameras": _camera_ids, "flame_cooldown_minutes": _int(1, 60)},
+               "cooldown_minutes": _int(1, 120), "flame_cameras": _camera_ids, "flame_cooldown_minutes": _int(1, 60),
+               "flame_full_picture": bool},
     "faces": {"enabled": bool, "threshold": _float(0.25, 0.8), "present_minutes": _int(1, 720)},
     "notify": {"provider": _choice(*PROVIDERS), "instance": _text(60), "token": _text(200), "to": _text(60),
                "api_url": _text(200), "send_images": bool, "kinds": _kinds, "send_locations": bool},
@@ -371,6 +379,31 @@ def public_settings(cfg: dict) -> dict:
             else:
                 out.setdefault(section, {})[key] = cfg[section][key]
     return out
+
+
+def read_camera_names(file: str | Path) -> dict[str, str]:
+    file = Path(file)
+    if not file.exists():
+        return {}
+    try:
+        data = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return {str(k): str(v) for k, v in data.items() if str(v).strip()} if isinstance(data, dict) else {}
+
+
+def clean_camera_name(name) -> str:
+    """A name for the screen and the WhatsApp messages: one line, no control characters, at most 40 letters."""
+    text = " ".join("".join(ch if ch.isprintable() else " " for ch in str(name or "")).split())
+    return text[:40]
+
+
+def set_camera_name(file: str | Path, cam_id: str, name: str) -> None:
+    file = Path(file)
+    names = read_camera_names(file)
+    names[cam_id] = name
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(yaml.safe_dump(names, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
 def set_camera_lines(file: str | Path, cam_id: str, lines: list[dict]) -> bool:

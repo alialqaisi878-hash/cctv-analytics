@@ -6,6 +6,7 @@ import threading
 
 import pytest
 import yaml
+from pathlib import Path
 
 from app import config, discovery
 
@@ -128,3 +129,48 @@ def test_settings_are_validated_applied_and_kept(cfg_path):
         with pytest.raises(ValueError):
             config.apply_settings(cfg, bad)
     assert config.load_config(cfg_path)["privacy"]["retention_days"] == 60
+
+
+def test_rename_any_camera_and_keep_the_name(cfg_path):
+    from fastapi.testclient import TestClient
+    from app.server import create_app
+    cfg = config.load_config(cfg_path)
+    cfg["database"] = str(Path(cfg["_cameras_file"]).parent / "t.db")
+    cam = cfg["cameras"][0]
+    c = TestClient(create_app(cfg, start_cameras=False))
+    r = c.put(f"/api/cameras/{cam['id']}/name", json={"name": "  مخزن\nالطابق الأول  "})
+    assert r.status_code == 200 and r.json()["name"] == "مخزن الطابق الأول"
+    assert cam["name"] == "مخزن الطابق الأول"
+    assert [x["name"] for x in c.get("/api/cameras").json() if x["id"] == cam["id"]] == ["مخزن الطابق الأول"]
+    assert c.put(f"/api/cameras/{cam['id']}/name", json={"name": "   "}).status_code == 400
+    assert c.put("/api/cameras/nope/name", json={"name": "x"}).status_code == 404
+    assert config.read_camera_names(cfg["_names_file"]) == {cam["id"]: "مخزن الطابق الأول"}
+    again = config.load_config(cfg_path)                       # after a restart: still the new name
+    assert [x["name"] for x in again["cameras"] if x["id"] == cam["id"]] == ["مخزن الطابق الأول"]
+
+
+def test_dahua_camera_abilities_are_read_and_a_refused_login_stops_at_once():
+    from app import camera_api
+
+    class R:
+        def __init__(self, code, text=""):
+            self.status_code, self.text = code, text
+
+    answers = {
+        "/cgi-bin/magicBox.cgi?action=getDeviceType": R(200, "type=IPC-HFW3449T1-AS-PV\r\n"),
+        "/cgi-bin/magicBox.cgi?action=getSoftwareVersion": R(200, "version=2.840.0000000.13.R,build:2024-01-01\r\n"),
+        "/cgi-bin/devVideoAnalyse.cgi?action=getcaps&channel=1": R(200, "caps.SupportedRules=CrossLineDetection,NumberStat\r\n"),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule": R(200, "\r\n".join([
+            "table.VideoAnalyseRule[0][0].Type=CrossLineDetection", "table.VideoAnalyseRule[0][0].Enable=true",
+            "table.VideoAnalyseRule[0][1].Type=NumberStat", "table.VideoAnalyseRule[0][1].Enable=false"])),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect": R(200, "table.SmartMotionDetect[0].Enable=true\r\n"),
+    }
+    asked = []
+    a = camera_api.probe("10.0.0.5", "admin", "pw", get=lambda p: (asked.append(p), answers[p])[1])
+    assert a["status"] == "ok" and a["model"] == "IPC-HFW3449T1-AS-PV" and a["firmware"].startswith("2.840")
+    assert a["can"] == ["CrossLineDetection", "NumberStat"] and a["on"] == ["CrossLineDetection"] and a["human_motion"] is True
+    asked.clear()
+    a = camera_api.probe("10.0.0.5", "admin", "bad", get=lambda p: (asked.append(p), R(401))[1])
+    assert a["status"].startswith("login refused") and len(asked) == 1
+    assert camera_api.login_of("rtsp://ad%40m:p%3Aw@10.0.0.5:554/cam/realmonitor?channel=1&subtype=0") == ("10.0.0.5", "ad@m", "p:w")
+    assert camera_api.login_of("rtsp://10.0.0.6/Streaming/Channels/101") is None

@@ -34,6 +34,7 @@ def cfg(tmp_path):
     c["database"] = str(tmp_path / "data" / "t.db")
     c["_settings_file"] = str(tmp_path / "data" / "settings.yaml")
     c["_cameras_file"] = str(tmp_path / "data" / "cameras.yaml")
+    c["_names_file"] = str(tmp_path / "data" / "camera_names.yaml")
     return c
 
 
