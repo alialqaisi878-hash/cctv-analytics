@@ -479,7 +479,7 @@ class CameraWorker(threading.Thread):
     def _process(self, frame: np.ndarray, ts: float, dets=None, moving=False):
         det = self.cfg["detector"]
         h, w = frame.shape[:2]
-        sure = det["confidence"]
+        sure = float(self.cam.get("confidence") or det["confidence"])   # this camera's own sensitivity, if set
         # the detector is asked for weaker guesses too: a person half out of the picture, bent over or seen from
         # above scores low. Weak guesses only count when they also move like a person (see below).
         low = min(sure, max(0.2, sure * 0.5))
